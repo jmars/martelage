@@ -1,3 +1,8 @@
+NOTE: this repository is licensed under two licences, split by file — CC BY 4.0 for the
+specification text, the vectors and the README, Apache-2.0 for the validator and all code — which is
+why GitHub's licence badge reads NOASSERTION instead of a single identifier. Nothing here is
+unlicensed: the split below is the licence, and README.md, section "Licence", explains it.
+
 Copyright (c) 2026 the Martelage authors.
 
 This repository is released under two licences, split by what a file is:

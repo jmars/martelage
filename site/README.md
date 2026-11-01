@@ -24,9 +24,25 @@ state colours** — a verdict is coloured by nothing on this page, because the v
 are the only thing entitled to assert one, and an unarmed layer must never read as a pass (§7,
 §10.4 item 6).
 
-Serving: the repository is served from its root, so pages link to `../spec/MARTELAGE-0.1.md`,
-`../README.md` and `../LICENSE` rather than copying anything. Validator and vector paths are quoted
-as repo-relative text, because the site is not served with the validator next to it.
+Serving: the pages link to `../spec/MARTELAGE-0.1.md`, `../README.md` and `../LICENSE` rather than
+copying anything, which is correct for the repository tree, where the site is read from `site/`.
+Validator and vector paths are quoted as repo-relative text, because the site is not served with the
+validator next to it.
+
+Publishing: `.github/workflows/pages.yml` builds a staging directory and deploys it with
+`actions/deploy-pages` on every push to `main` (and on `workflow_dispatch`); the URL it deploys to is
+<https://jmars.github.io/martelage/>. An Actions artifact is used rather than a branch folder
+because Pages' branch sources are the repository root or `/docs`, and the site has to stay in
+`site/` for `make -C site pdf`. The staging directory holds `index.html`, `usage.html` and
+`site.css` at its root, plus the three link targets at the paths the pages name them by —
+`spec/MARTELAGE-0.1.md`, `README.md`, `LICENSE` — because the published root *is* the site's
+directory, so the siblings the links point at have to sit beside it. One substitution is made in the
+staged copy and only there: a browser resolving `../` from the published root climbs out of the
+artifact to `https://jmars.github.io/`, so the leading `../` is stripped from the staged HTML and the
+repository's own files keep their `../` links. (`site/README.md` is not staged — it is this document,
+and at the staging root it would collide with the repository `README.md` the pages link to.) The PDF
+is **not** served by Pages: it stays in the repository, and no page links to it, so the published
+site offers no PDF.
 
 Content discipline: every factual claim is traceable to `spec/MARTELAGE-0.1.md` or `README.md`, or
 is marked MEASURED with the command that produced it. No marketing register, no adoption claims, no

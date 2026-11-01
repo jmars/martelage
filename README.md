@@ -4,6 +4,11 @@
 vectors that prove the validator can fail. Nothing here is committed to a registry, published by a
 standards body, or certified by anyone.
 
+**The site:** `site/` — the explanatory pages — deploys to GitHub Pages at
+<https://jmars.github.io/martelage/> via [`.github/workflows/pages.yml`](.github/workflows/pages.yml)
+on every push to `main`. The published pages are that directory; the specification, this README and
+`LICENSE` are staged beside them, and are served as files rather than rendered pages.
+
 ## What this is
 
 An **evidence package** is a directory of hash-chained record files plus one manifest that states its
@@ -227,6 +232,22 @@ that is a reading of a document, not a measurement of a package, and it is marke
   published `v` must not be.
 - A conformance statement must name both the document version and the wire version it was made
   against. Annex C is the template; the statement is a claim under the claimant's own name.
+
+## Licence
+
+This repository carries **two** licences, split by what a file is, and the split is stated in
+[`LICENSE`](LICENSE): the specification text ([`spec/MARTELAGE-0.1.md`](spec/MARTELAGE-0.1.md)),
+the test vectors under [`vectors/`](vectors/) and this README are **CC BY 4.0**
+([`LICENSE-CC-BY-4.0`](LICENSE-CC-BY-4.0)); the reference validator
+([`validator/martelage-verify`](validator/martelage-verify)) and all other code are **Apache-2.0**
+([`LICENSE-APACHE`](LICENSE-APACHE)). The split is deliberate: a standard's text should be
+quotable and its code should be reusable, and the two licences are chosen for those two jobs
+separately.
+
+**GitHub's licence badge reads `NOASSERTION` on this repository.** That is what a per-file split
+looks like to a detector that expects one SPDX identifier for the whole repository — it is not a
+statement that the work is unlicensed. If you see `NOASSERTION`, read [`LICENSE`](LICENSE): it is
+the authoritative statement of which paths carry which licence.
 
 ## Raising a defect
 

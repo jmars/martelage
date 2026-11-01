@@ -1,0 +1,73 @@
+name: pages
+
+# Publishes the site in site/ to GitHub Pages.
+#
+# WHY AN ACTIONS WORKFLOW AND NOT A BRANCH FOLDER. Pages serves either a folder of a branch (the
+# root or /docs) or an uploaded artifact. The site has to stay in site/ — the print artifact is
+# built from there (`make -C site pdf`) — so neither branch folder is available, and the artifact
+# is the only source that can serve a directory that is not one of those two.
+#
+# THE SHAPE, AND THE ONE SUBSTITUTION. The pages link to ../spec/MARTELAGE-0.1.md, ../README.md and
+# ../LICENSE, which resolve inside the repository because the repository is read from its root. The
+# published root is https://jmars.github.io/martelage/, and a browser resolving ../ from there
+# climbs to https://jmars.github.io/ — outside the artifact — so the artifact cannot reproduce the
+# repository's nesting for those links. It reproduces their DESTINATIONS instead: the staging root
+# holds the site's files at the top level (index.html, usage.html, site.css) and each link target
+# at the path the page names it by, with the leading ../ removed — spec/MARTELAGE-0.1.md, README.md,
+# LICENSE. The repository files are NOT edited: `../spec/...` is correct for the repo tree, and the
+# rewrite happens only in the staging copy, as the single substitution href="../ -> href=" below.
+#
+# site/README.md is not copied: it is a maintainer's document, and flattening it to the staging
+# root would collide with the repository README.md that the pages link to. The .typ and .pdf are a
+# build input and its output, not pages; the pages do not link to the PDF, so it is not published
+# here — it stays in the repository.
+#
+# THE .md FILES ARE SERVED AS FILES, NOT RENDERED. No Jekyll or Markdown processing is configured,
+# so a reader who clicks "the specification" gets spec/MARTELAGE-0.1.md itself, as plain source.
+# .nojekyll is staged for the case where that assumption is wrong: it is a no-op if Jekyll does not
+# run on an artifact deploy, and it is the thing that stops a .md file being converted to HTML if it
+# does. The failure it prevents — the spec link serving generated HTML instead of the file — would
+# be silent.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build the staging directory
+        run: |
+          set -eu
+          stage="$RUNNER_TEMP/pages"
+          rm -rf "$stage"
+          mkdir -p "$stage/spec"
+          cp site/index.html site/usage.html site/site.css "$stage/"
+          cp README.md LICENSE "$stage/"
+          cp spec/MARTELAGE-0.1.md "$stage/spec/"
+          : > "$stage/.nojekyll"
+          # ../spec -> spec, ../README.md -> README.md, ../LICENSE -> LICENSE (see the note above)
+          sed -i 's|href="\.\./|href="|g' "$stage/index.html" "$stage/usage.html"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ runner.temp }}/pages
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
