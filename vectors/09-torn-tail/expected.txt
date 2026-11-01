@@ -1,0 +1,8 @@
+vector: 09-torn-tail
+what:   the final line of the record stream has no terminating newline: a cut
+        inside a line is not a short-but-complete stream
+run:    sh validator/evp-verify vectors/09-torn-tail/pkg
+exit:   1
+must print:
+  - "does not end with a newline"
+requirements exercised: EV-36

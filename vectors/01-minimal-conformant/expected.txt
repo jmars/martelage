@@ -1,0 +1,10 @@
+vector: 01-minimal-conformant
+what:   a minimal conformant package: one stream, two records, one carried document
+run:    sh validator/evp-verify vectors/01-minimal-conformant/pkg
+exit:   0
+must print:
+  - "verdict      CONFORMANT"
+  - "NOT ANCHORED — this package's digest is held by no one but its producer"
+  - "layer 3  package chain       not armed (no --prev-package given)"
+  - the residual block of §3.3, verbatim
+requirements exercised: EV-6, EV-17, EV-19, EV-35, EV-41, EV-43, EV-61, EV-71

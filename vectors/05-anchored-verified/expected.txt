@@ -1,0 +1,12 @@
+vector: 05-anchored-verified
+what:   the same package as 04, with the holder's digest supplied as evidence.
+        evidence.txt holds the digest the "holder" kept (it is this package's
+        digest, computed outside the package — a manifest cannot carry its own
+        digest, see EV-62)
+run:    sh validator/evp-verify --anchor-evidence vectors/05-anchored-verified/evidence.txt \
+          vectors/05-anchored-verified/pkg
+exit:   0
+also:   sh validator/evp-verify vectors/05-anchored-verified/pkg   ->  exit 3
+must print:
+  - "the holder's digest equals this package's digest — VERIFIED"
+requirements exercised: EV-61 (rule e), EV-64, EV-66, EV-69

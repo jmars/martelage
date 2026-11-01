@@ -1,0 +1,9 @@
+vector: 02-broken-predecessor
+what:   one record's prev link names nothing in its stream; every other byte is
+        consistent (seq, count, head, digests), so the chain check is the ONLY
+        check that can catch it — this is the vector the validator mutation uses
+run:    sh validator/evp-verify vectors/02-broken-predecessor/pkg
+exit:   1
+must print:
+  - "prev at seq 2 does not name seq 1"
+requirements exercised: EV-43, EV-44

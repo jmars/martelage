@@ -1,0 +1,9 @@
+vector: 07-scope-vocabulary
+what:   scope.not_contains[0].meaning is "not-there", outside the vocabulary of
+        §8.3 — a scope statement that cannot be parsed reads as one, so it is
+        refused rather than guessed at
+run:    sh validator/evp-verify vectors/07-scope-vocabulary/pkg
+exit:   1
+must print:
+  - "meaning 'not-there' is outside the vocabulary"
+requirements exercised: EV-56, EV-57

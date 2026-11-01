@@ -1,0 +1,9 @@
+vector: 04-anchor-unverifiable
+what:   the package claims a p1 anchor and the verifier brings no evidence: the
+        claim is neither conformant nor refuted, so it must not pass
+run:    sh validator/evp-verify vectors/04-anchor-unverifiable/pkg
+exit:   3
+must print:
+  - "CANNOT DECIDE"
+  - "the holder's digest is the input this check needs"
+requirements exercised: EV-61 (rule e), EV-64, EV-70

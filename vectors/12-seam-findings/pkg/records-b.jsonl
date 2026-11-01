@@ -1,0 +1,2 @@
+{"contract":"evp-example-notes","v":1,"kind":"manifest","generator":"by-hand","streams":{"note":{"n":1,"head":"78ff20a7cae159c85e628754870ba10981ce32ae05c5f915b2e0afe32e4a6e75"}},"counts":{"records":1}}
+{"v":1,"kind":"note","stream":"note","seq":1,"id":"note:1","writer":"writer-b","mark":"MEASURED","ts":1700000150,"body":{"event":"b1","detail":"from b"},"body_sha":"78ff20a7cae159c85e628754870ba10981ce32ae05c5f915b2e0afe32e4a6e75","prev":null}

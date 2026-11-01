@@ -1,0 +1,3 @@
+{"contract":"evp-example-notes","v":1,"kind":"manifest","generator":"by-hand","streams":{"note":{"n":2,"head":"1361d16ed469dfb1cc3534204e90ae5e90c30be1f663c3bc1987ffa40d30219e"}},"counts":{"records":2}}
+{"v":1,"kind":"note","stream":"note","seq":1,"id":"note:1","writer":"writer-a","mark":"MEASURED","ts":1700000200,"body":{"event":"a1","detail":"from a"},"body_sha":"54c68f5cf4afc428a76afe7352f42bda5e4da20d1f10599871e5ec4b5c647ab4","prev":null}
+{"v":1,"kind":"note","stream":"note","seq":2,"id":"note:2","writer":"writer-a","mark":"MEASURED","ts":1700000100,"body":{"event":"a2","detail":"older epoch, written late"},"body_sha":"1361d16ed469dfb1cc3534204e90ae5e90c30be1f663c3bc1987ffa40d30219e","prev":"54c68f5cf4afc428a76afe7352f42bda5e4da20d1f10599871e5ec4b5c647ab4"}

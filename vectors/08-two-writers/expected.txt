@@ -1,0 +1,6 @@
+vector: 08-two-writers
+what:   two writers, two record stream files, one package — the seam rule: each
+        file is validated on its own and nothing merges them
+run:    sh validator/evp-verify vectors/08-two-writers/pkg
+exit:   0
+requirements exercised: EV-18, EV-39, EV-40
