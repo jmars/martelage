@@ -1,0 +1,30 @@
+vector: 31-role-not-a-word
+what:   vector 01's package with one value changed: the carried document's `role`
+        is "DOCUMENT!!". Every digest, count and stream byte is untouched — a
+        role is a word the manifest states, not a byte of the payload. §5.2.6
+        (MA-30) says "`role` is a lowercase word", and the validator printed the
+        role, compared it to "records" to decide what to parse, and never
+        constrained its spelling: a files[] entry could carry any string at all
+run:    sh validator/martelage-verify vectors/31-role-not-a-word/pkg
+exit:   1
+also:   sh validator/martelage-verify vectors/31-role-not-a-word/pkg-additive-ok   ->  exit 0:
+        the same package with role "human-notes" — a role this standard does not
+        define, but a lowercase word — is carried and hashed and never parsed
+        (§4.3 MA-18). The check constrains the spelling, not the set: the
+        vocabulary stays open to additive roles (§11.2)
+must print:
+  - "role 'DOCUMENT!!' is not a lowercase word"
+  - "(notes.md)"
+requirements exercised: MA-30
+why it fails without the fix: with the role charset check deleted, this vector
+        reports CONFORMANT (exit 0) — measured on the pre-fix validator. No other
+        check sees the value: the file's digest and length are correct, the role
+        is not `records` so the payload loop never parses it, and §4.4 (MA-19)
+        constrains the path, the digest and the length, not the role
+the charset, stated: `^[a-z][a-z0-9-]*$` — lowercase letters, then lowercase
+        letters, digits and hyphen. Read off the standard's own vocabulary, which
+        spells its multi-word words that way (`not-recorded`, `none-this-scope`,
+        `p2-append-only-log`): a hyphen and a digit are inside "a lowercase word",
+        an upper-case letter, a space or a punctuation mark is not. The shipped
+        roles (`records`, `document`, `evidence`) and any additive lowercase role
+        pass unchanged

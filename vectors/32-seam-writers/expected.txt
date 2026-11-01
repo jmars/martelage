@@ -1,0 +1,39 @@
+vector: 32-seam-writers
+what:   two record stream files, two writers, ONE body: records-a.jsonl and
+        records-b.jsonl each carry a record at seq 1 whose body bytes — and
+        therefore whose body_sha — are identical, and differ only in `writer`
+        and `ts`. The cross-writer comparison at layer 3 keyed on body_sha alone,
+        so it found nothing to report at that line and printed "at seq ?": a
+        disagreement announced with the sequence and the writers withheld, on the
+        one finding the standard exists to keep visible (§6.7 MA-40). "Two
+        writers disagree" is the signal; a reader told only that something
+        disagrees cannot act on it
+run:    sh validator/martelage-verify vectors/32-seam-writers/pkg
+exit:   0
+also:   sh validator/martelage-verify vectors/32-seam-writers/pkg-longer   ->  exit 0:
+        the same body at a different seq — records-a.jsonl ends after seq 1 and
+        records-b.jsonl carries seq 1 and seq 2, so the first differing line is
+        line 2. The finding must name seq 2 and say which file holds no record
+        there, not print the line index or a "?"
+must print:
+  - "two record stream files disagree about stream 'note' at seq 1"
+  - "records-a.jsonl and records-b.jsonl"
+  - "writer 'writer-a' against writer 'writer-b' at that seq"
+requirements exercised: MA-40, MA-72
+why it fails without the fix: with the body_sha-only comparison restored, this
+        vector still exits 0 — a finding MUST NOT change the exit code (MA-72), so
+        the exit code cannot carry this check — and prints "at seq ?" naming no
+        writer: the must-print fragments above are absent. Measured on the
+        pre-fix validator. Vector 08 still passes under that mutant: its two
+        records differ in body, so the old comparison caught it. The mutation
+        removes exactly the new capability.
+        The pkg-longer arm, measured under the same mutant, already printed
+        "at seq 2" — the old code compared body_sha per LINE, and line 2 exists
+        in one file only, so an unset value differed. What that arm adds is the
+        rest: which file carries the record, which writer wrote it, and that the
+        other file holds no record there. Under the mutant those are absent and
+        the finding names no writer at all
+what the fix compares: the whole record line, not one field. A record is the
+        line (§6.2 MA-35), so two files whose records differ in seq, prev, id, ts
+        or writer at the same line disagree about that record — the seam rule
+        says "different records at the same seq", not "different body digests"

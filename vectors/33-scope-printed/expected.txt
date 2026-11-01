@@ -1,0 +1,27 @@
+vector: 33-scope-printed
+what:   a conformant package whose scope statement carries two not_contains
+        entries with two different meaning words. §8.5 (MA-59) requires the
+        validator to check the section's presence, shape and vocabulary and to
+        print it in full on every run; §10.4 item 2 requires the scope section
+        printed "including every not_contains entry with its meaning word". The
+        validator built the section and printed it, and no vector asserted the
+        print: the sentence was load-bearing prose with nothing behind it
+run:    sh validator/martelage-verify vectors/33-scope-printed/pkg
+exit:   0
+must print:
+  - "a witness outside this host [none-this-scope]"
+  - "the producer's own source tree [not-recorded]"
+  - "  contains:"
+  - "2 record(s) on stream(s): note"
+requirements exercised: MA-54, MA-55, MA-56, MA-57, MA-59
+why it fails without the fix: with the scope section's print removed from a copy
+        of the validator (the section is still assembled and still checked), this
+        vector still exits 0 — printing is not a refusal — and every must-print
+        fragment above is absent. Measured. The exit code cannot carry this
+        check: a report that silently drops a section is exactly the failure mode
+        MA-59's second half names, and the exit code is the same either way
+what this vector does NOT claim: that the scope statement is TRUE. §8.6 (MA-60)
+        makes the scope the producer's claim about what it did and did not carry,
+        and §10.7 (MA-74) lists completeness among what no validator can check.
+        "The section is well formed and was printed in full" is the whole of what
+        MA-59 now states, and the whole of what this vector measures

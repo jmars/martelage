@@ -610,6 +610,13 @@ while [ "$nf" -lt "$NFILES" ]; do
 		refuse "manifest: files[$nf-1] path '$fp' is not a safe relative path (§4.4 MA-19)"
 		continue ;;
 	esac
+	# §5.2.6 MA-30: role is a lowercase word. The standard's own vocabulary is
+	# written that way (not-recorded, none-this-scope), so a hyphen and a digit
+	# are inside it and anything else — an upper-case letter, a space, a
+	# punctuation mark — is not. A role this standard does not define is still
+	# carried and hashed (§4.3 MA-18); this constrains its spelling, not its set.
+	printf '%s' "$fr" | grep -Eq '^[a-z][a-z0-9-]*$' ||
+		refuse "manifest: files[$nf-1] ($fp) role '${fr}' is not a lowercase word (§5.2.6 MA-30)"
 	hex64 "${fs:-}" || refuse "manifest: files[$nf-1] ($fp) sha256 is not 64 lowercase hex (§4.4 MA-19)"
 	uint "${fb:-}" || refuse "manifest: files[$nf-1] ($fp) bytes is not a decimal count (§4.4 MA-19)"
 	if [ -s "$tmp/listed" ] && grep -qxF "$fp" "$tmp/listed"; then
@@ -895,10 +902,48 @@ for sname in $(sort -u "$tmp/streams.list"); do
 		[ -f "$other" ] || continue
 		[ "$other" = "$first" ] && continue
 		cmp -s "$first" "$other" && continue
-		ln=$(awk -F"$SEP" 'NR == FNR { x[FNR] = $2; next } { if ($2 != x[FNR]) { print FNR; exit } }' "$first" "$other")
-		fa=${first##*/s.}; fa=${fa%%.*}
-		fb=${other##*/s.}; fb=${fb%%.*}
-		finding "  two record stream files disagree about stream '$sname' at seq ${ln:-?}: $(sed -n "${fa}p" "$tmp/recfiles") and $(sed -n "${fb}p" "$tmp/recfiles") — they are NOT merged, and neither is preferred (§6.7 MA-40)"
+		# §6.7 MA-40: the finding names the two files, the sequence they disagree
+		# at, and the writer of each record. Comparing body_sha alone reported
+		# "seq ?" for two writers over one body — a disagreement announced with
+		# the who and the where withheld. The whole line is the record, so the
+		# whole line is compared (seq, sha, prev, id, ts, writer), and each side's
+		# seq and writer are carried out with it.
+		n1=$(wc -l <"$first" | tr -d ' ')
+		n2=$(wc -l <"$other" | tr -d ' ')
+		nmax=$((n1 > n2 ? n1 : n2))
+		seam=$(awk -F"$SEP" -v max="$nmax" '
+			NR == FNR { la[FNR] = $0; sa[FNR] = $1; wa[FNR] = $6; next }
+			{ lb[FNR] = $0; sb[FNR] = $1; wb[FNR] = $6 }
+			END {
+				for (i = 1; i <= max; i++) {
+					if (la[i] != lb[i]) {
+						printf "%s\037%s\037%s\037%s\037%s\n", sa[i], wa[i], sb[i], wb[i], i
+						exit
+					}
+				}
+			}
+		' "$first" "$other")
+		[ -n "$seam" ] || continue
+		IFS=$SEP read -r sqa wta sqb wtb _ <<EOF
+$seam
+EOF
+		fa=${first##*/s.}
+		fa=${fa%%.*}
+		fb=${other##*/s.}
+		fb=${fb%%.*}
+		fpa=$(sed -n "${fa}p" "$tmp/recfiles")
+		fpb=$(sed -n "${fb}p" "$tmp/recfiles")
+		if [ -n "$sqa" ] && [ -n "$sqb" ]; then
+			sq=$sqa
+			who="writer '$wta' against writer '$wtb' at that seq"
+		elif [ -n "$sqb" ]; then
+			sq=$sqb
+			who="$fpb carries seq $sqb (writer '$wtb') and $fpa holds no record at that seq"
+		else
+			sq=$sqa
+			who="$fpa carries seq $sqa (writer '$wta') and $fpb holds no record at that seq"
+		fi
+		finding "  two record stream files disagree about stream '$sname' at seq $sq: $fpa and $fpb — $who; they are NOT merged, and neither is preferred (§6.7 MA-40)"
 	done
 done
 

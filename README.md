@@ -21,7 +21,7 @@ reader cannot credit the weakest layer with the strength of the strongest.
 |---|---|
 | `spec/MARTELAGE-0.1.md` | the standard. Every normative requirement carries an identifier (`MA-1` … `MA-82`) so a conformance report can cite it. |
 | `validator/martelage-verify` | the reference validator: POSIX shell + the set §10.1 names (`awk`, `sed`, `grep`, `cmp`, `sort`, `sha256sum`, `tr`, `cut`, `head`, `tail`, `wc`, `find`, `mktemp`, `rm`, `cat`). No network, no interpreter beyond those, no keys, no service, no producer. |
-| `vectors/` | thirty hand-made packages with their expected results. Constructed for the standard; none is exported from a producer system. |
+| `vectors/` | thirty-three hand-made packages with their expected results. Constructed for the standard; none is exported from a producer system. |
 | `LICENSE` | the licence split: specification text CC BY 4.0, code Apache-2.0. |
 
 The standard is published on its own. It defines concepts — a record envelope, a stream, a package
@@ -92,6 +92,11 @@ same thing, plus the requirement identifiers the case exercises.
 | 29 | `29-symlink` | an unlisted symlink pointing out of the package | 1 | **1** |
 | 29b | `29` with the link listed | a listed symlink whose digest was computed through the link | 1 | **1** |
 | 30 | `30-residual-on-usage-error` | the residual on an exit-2 usage error that names a package | 2 | **2** |
+| 31 | `31-role-not-a-word` | a `files[]` `role` of `DOCUMENT!!` — §5.2.6 says a lowercase word | 1 | **1** |
+| 31b | `31` with the role `human-notes` | a role this standard does not define, but a lowercase word: carried, hashed, never parsed | 0 | **0** |
+| 32 | `32-seam-writers` | two writers over ONE body at seq 1 — the finding must name both writers and the sequence | 0 + 1 finding | **0 + 1 finding** |
+| 32b | `32` `pkg-longer` | the same body at a different seq: the finding names seq 2 and which file holds no record there | 0 + 1 finding | **0 + 1 finding** |
+| 33 | `33-scope-printed` | the scope section printed in full, every `not_contains` entry with its meaning word | 0 | **0** |
 
 11b is the residual of §7.4.3 in one line: without the predecessor, a dropped record is invisible,
 and the validator says the layer was not armed rather than implying a pass.
@@ -108,6 +113,22 @@ Vectors 26–30 close a second review. Four of them enforce text that was alread
 that names a package even when the run ends at exit 2 for a usage error. The symlink rule was not in
 the text at all, so it was added as **MA-82** — the next free identifier, nothing renumbered. Each of
 the five has a mutant row below, and each vector's `expected.txt` states why it fails without its fix.
+
+Vectors 31–33 close a third pass. 31 enforces a charset the text already stated (§5.2.6 `role` is "a
+lowercase word") and no check applied; 32 carries the writer and the real sequence into the seam
+finding, which §6.7 (MA-40) requires and which the body_sha-only comparison withheld — it printed
+`at seq ?` and named neither writer; 33 asserts a print that MA-59 requires and nothing tested, after
+MA-59 was corrected to state only what a validator can do (§8.6 makes the scope's truth
+uncheckable, so the old wording described a membership check that no implementation has or should
+have). No identifier was added or renumbered: MA-1 … MA-82 are the same set as before.
+
+The same pass examined a fourth candidate and closed it without a check: one file declaring a stream
+`n:0` while another file carries records on it. §6.4 scopes `n` and `head` to the records *in that
+file*, so the two declarations are independent statements and cannot contradict each other — and a
+check requiring them to agree would be §6.7 read backwards, since the seam rule forbids reading two
+files as one stream at all. One sentence in §6.4 now says so, because the misreading is what
+produced the candidate. The per-file half is a real check and was already armed: a file declaring
+`n:0` while carrying records is refused (vector 27).
 
 ## The validator can fail — a mutation of itself
 
@@ -162,6 +183,9 @@ check whose removal changes nothing is not load-bearing.
 | a declared stream must be the stream the records are on | 27 | 1 | **0** |
 | the p2 evidence digest is compared to the package digest | 28 | 1 | **3** |
 | symlinks are enumerated and a listed symlink is refused | 29 | 1 | **0** (both arms) |
+| the `role` charset | 31 | 1 | **0** |
+| the seam finding names the writer and the real sequence | 32 | names both writers at seq 1 | **`at seq ?`, no writer named (still exit 0)** |
+| the scope section is printed in full | 33 | every entry with its meaning word | **silent (still exit 0)** |
 
 Two of these are the difference between a report that names what it could not check and one that does
 not: the first row is vector 04's own "must print" line, and vector 23b shows the harder case — a
@@ -172,8 +196,8 @@ check, because a refusal must not make an undecided check invisible (MA-71).
 
 The whole vector suite above was re-run under `busybox sh` with `busybox awk`, `sed`, `grep`, `cmp`
 and `sha256sum` — a different shell and a different awk implementation from the ones used for the
-table. All 39 invocations (30 vector runs plus the 9 documented second arms) return the same exit
-code, and 38 of 39 produce byte-identical stdout and stderr. The exception is measured and named:
+table. All 44 invocations (33 vector runs plus the 11 documented second arms) return the same exit
+code, and 43 of 44 produce byte-identical stdout and stderr. The exception is measured and named:
 vector 16, a NUL byte inside a record body, is refused by both awks (exit 1) with different refusal
 text, because `busybox awk` and `gawk` split a NUL-bearing line differently. That is a difference
 between two awks' handling of a byte no conformant package may carry, not a difference in the

@@ -1,0 +1,2 @@
+{"contract":"martelage-example-notes","v":1,"kind":"manifest","streams":{"note":{"n":1,"head":"0c3a5fc60625109ebc188d6f58e2916c65323ad092facfcb76eb5247908e6f5d"}}}
+{"v":1,"kind":"note","stream":"note","seq":1,"id":"note:1","writer":"writer-a","mark":"MEASURED","ts":1700000000,"body":{"event":"started","detail":"one note"},"body_sha":"0c3a5fc60625109ebc188d6f58e2916c65323ad092facfcb76eb5247908e6f5d","prev":null}

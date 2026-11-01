@@ -291,10 +291,13 @@ predecessor). An unchained package MUST say so with `"package_sha":null,"how":"n
 fabricate a chain, and a validator MUST refuse `package_sha` non-null with `how` equal to `"none"`
 or `package_sha` null with `how` not equal to `"none"`. — **MA-29**
 
-**5.2.6 `files`.** The file list of §4.4. `role` is a lowercase word; this standard defines
+**5.2.6 `files`.** The file list of §4.4. `role` is a lowercase word — `^[a-z][a-z0-9-]*$`, which is
+the spelling this standard's own vocabulary uses (`not-recorded`, `none-this-scope`); a validator
+MUST refuse a role outside it, naming the field and the value. This standard defines
 `records` (a record stream file) and reserves `document` (human-readable material carried with the
 package) and `evidence` (verifier-side material the producer is passing along, never required for
-conformance). — **MA-30**
+conformance). The charset constrains the spelling, not the set: a role this standard does not define
+is carried and hashed and never parsed (§4.3). — **MA-30**
 
 **5.2.7 `scope`.** §8.
 
@@ -360,6 +363,12 @@ this file to `{"n":<count>,"head":"<64 hex>"|null}`, where `head` is the `body_s
 last record and `null` for an empty stream. It MAY carry anything else, which this standard does not
 constrain and a validator MUST NOT interpret beyond ignoring and counting it. — **MA-37**
 
+`n` and `head` are statements about *this file's* records and nothing else. Two record stream files
+that both name the same stream make two independent statements: one may declare it `n:0` because that
+file holds none of its records while the other carries them, and neither statement is thereby false.
+A validator MUST NOT require the two files to agree about a stream's emptiness — that is the seam
+rule's question, and §6.7 answers it by refusing to read two files as one stream at all.
+
 **6.5 Line 1 is not a record.** A stream manifest MUST NOT be counted as a record, MUST NOT be
 assigned a sequence number, and MUST NOT be chained. — **MA-38**
 
@@ -373,8 +382,10 @@ writers that neither wrote. — **MA-39**
 **6.7 The seam rule.** A package MAY carry more than one record stream file. Each is validated on
 its own; two files MUST NOT be read as a continuation of one another even when they declare the
 same stream name. Two files declaring the same stream name with different records at the same `seq`
-is a *finding*, reported with both file names and the sequence number, never resolved by choosing
-one. — **MA-40**
+is a *finding*, reported with both file names, the sequence number and the writer of each record
+named, never resolved by choosing one. A finding that says a disagreement exists but not who
+disagrees or where is not the report this rule asks for: the writer is what the seam is a seam
+*between* (§6.6), and the sequence is the only thing that locates it. — **MA-40**
 
 ---
 
@@ -494,7 +505,23 @@ publication, never by a producer's local choice). — **MA-57**
 **8.4 An absence is never rendered as a zero and never as a claim that the thing does not
 exist.** `not-recorded` and `ABSENT` are different facts and MUST be different words. — **MA-58**
 
-**8.5 The validator checks membership and prints the section in full on every run.** — **MA-59**
+**8.5 The validator checks the section's presence, shape and vocabulary, and prints it in full on
+every run.** — **MA-59**
+
+A validator MUST refuse a scope statement that is absent, whose `contains` is absent, empty or holds
+an empty string, whose `not_contains` is absent, whose entry carries an empty `thing` or `why`, or
+whose `meaning` is outside the vocabulary of §8.3 (MA-54, MA-55, MA-57). It MUST print the section in
+full on every run that prints a report, every `not_contains` entry with its meaning word included
+(§10.4). Those two things — the shape it can see, and the print — are the whole of what this
+requirement asks of a validator.
+
+It MUST NOT report the section as verified. The scope is the producer's claim about what it did and
+did not carry, and §8.6 states why no validator can check that claim: the package cannot contain the
+evidence of its own omission. In particular a validator MUST NOT compare `contains[]` or
+`not_contains[]` against the payload and render a match as agreement — a claim that happens to name
+the streams the package carries is not thereby true, and a scope section that is well formed and
+printed in full is a different fact from a scope statement that is true. A report that renders the
+first as the second credits the package with a completeness it never established (§10.7).
 
 **8.6 The scope is the producer's claim under its own name.** It cannot be verified mechanically: a
 producer can lie about what it did not carry. The standard records this as a limit rather than

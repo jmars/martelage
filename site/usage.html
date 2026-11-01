@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Martelage 0.1 — verifying a package, and producing one</title>
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header>
+<h1>Martelage — using the standard</h1>
+<p>Draft 0.1. Verifying a package you were handed; producing one from your own records; and what a
+validator must admit it cannot check.</p>
+<nav aria-label="Pages">
+<ul>
+<li><a href="index.html">What an evidence package is, and what it does not prove</a></li>
+<li><a href="../spec/MARTELAGE-0.1.md">The specification — <code>spec/MARTELAGE-0.1.md</code></a></li>
+<li><a href="../README.md">The repository README — <code>README.md</code></a></li>
+</ul>
+</nav>
+<p>Every command on this page was run by us on this tree (HEAD <code>90dbceb</code>) and its output
+pasted verbatim. Blocks marked MEASURED are copied from those runs; a statement that is a reading of
+the specification rather than a run is marked INTERPRETATION, in the manner the standard itself
+requires (§0.4 MA-4).</p>
+</header>
+
+<main>
+
+<section id="verify">
+<h2>Verify: the common case</h2>
+
+<p>You have a package directory. You run the reference validator against it. That is the whole
+procedure — there is nothing to install, no account, no key, no network:</p>
+
+<pre><code>sh validator/martelage-verify vectors/01-minimal-conformant/pkg</code></pre>
+
+<p>MEASURED, exit code <code>0</code>. This is the run's standard output in full, unedited; nothing
+was written to standard error:</p>
+
+<pre><code>martelage-verify — MARTELAGE-0.1 reference validator
+
+package      vectors/01-minimal-conformant/pkg
+digest       667229f663fa3d0c79d738ba0d016c99e10ff05dd794d86a01edd3f8df0a5c1a   (sha256 of package.json: this is the package digest)
+standard     martelage v1 (kind package-manifest)
+subject      c419edf957fda5f89c2988273d3d00e9e5b2a69ebe7f6bca22644da52bc129f3 (kind note-log)
+producer     example / by-hand 0 / contract martelage-example-notes 1
+created_at   1700000200
+prev         null (how: none)
+files        2
+records      2 over 1 stream(s)
+
+scope
+  contains:
+    - 2 record(s) on stream(s): note
+  not_contains:
+    - anything not listed above [not-recorded] this package is a hand-made example for the standard
+
+files
+  OK   records.jsonl                abf920fbb49003e1b06badc085e74f8396713bca64d2f123eccdb256e6a36bad  776 bytes  role=records
+  OK   notes.md                     798dab2402394de24954a4e5d0b8c806d8185ac2e54a95ec3ef22e1aeeba807f  55 bytes  role=document
+
+streams
+  FILE                 STREAM           N     HEAD           VERDICT
+  records.jsonl        note             2     6e28c56d1a81   OK
+
+anchor
+  NOT ANCHORED — this package's digest is held by no one but its producer
+
+layers
+  layer 0  body digests        checked
+  layer 1  stream continuity   checked
+  layer 2  package digest     667229f663fa3d0c79d738ba0d016c99e10ff05dd794d86a01edd3f8df0a5c1a
+  layer 3  package chain       not armed (no --prev-package given) — omission across packages is NOT checked
+  layer 4  anchor              not claimed by this package
+
+refusals
+  none
+
+findings
+  none
+
+ignored
+  2 field(s) this validator does not know, counted per (object, field) — ignored, never guessed at (§5.2.11 MA-33, §11.5 MA-80):
+  'records.jsonl' line 1     generator
+  'records.jsonl' line 1     counts
+
+not decidable
+  nothing — every check this validator implements could reach a verdict on this package (MA-70)
+
+residual
+  A package proves that what it contains was not altered after it left; it cannot prove that what it contains is all there was, and against an operator who rewrote everything before the first anchor it proves nothing.
+  A coherent tamper performed before the first observation is invisible to every mechanism in this standard.
+
+verdict      CONFORMANT</code></pre>
+
+<p>Read the block in this order and the report tells you what it did and did not do. The
+<code>layers</code> block names each layer and whether this run armed it. The <code>anchor</code>
+block says, in words, that no one but the producer holds this digest. The <code>residual</code> block
+is the §3.3 sentence, printed on every run that names a package. The <code>ignored</code> and
+<code>not decidable</code> blocks are sections of their own, so that a field the validator did not
+understand and a check it could not reach are never invisible (§10.4 items 9 and 10, MA-71).</p>
+
+<p>A refused package reads the same way, with the failing check named — MEASURED on
+<code>vectors/03-stream-gap/pkg</code>, an interior record removed, exit code <code>1</code>. Trimmed
+here to the refusal and the verdict; the rest of that report has the shape shown above:</p>
+
+<pre><code>refusals
+  payload: records.jsonl stream 'note': seq 4 where 3 was expected; 
+
+verdict      NON-CONFORMANT</code></pre>
+
+<h3>Exit codes</h3>
+
+<p>The exit code is the verdict; the tail of the output is not. The four codes are the standard's
+(§10.3 MA-70, and <a href="../README.md"><code>README.md</code></a>):</p>
+
+<div class="table-scroll" role="region" tabindex="0" aria-label="The exit codes">
+<table>
+<caption>The exit codes (§10.3)</caption>
+<thead>
+<tr>
+<th scope="col">code</th>
+<th scope="col">meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0</code></td>
+<td><strong>CONFORMANT</strong> — every check the run could perform passed. An unanchored package
+exits 0; the NOT-ANCHORED line has been printed.</td>
+</tr>
+<tr>
+<td><code>1</code></td>
+<td><strong>NON-CONFORMANT</strong> — a check failed: a digest, a length, a gap, a broken predecessor
+link, a torn line, a manifest count, an unknown scope word, an unsupported version, a chain break
+against <code>--prev-package</code>, a claimed anchor that is malformed or that the evidence
+contradicts.</td>
+</tr>
+<tr>
+<td><code>2</code></td>
+<td><strong>USAGE OR UNREADABLE</strong> — the invocation is wrong, or an input could not be read (an
+unreadable file is not an absence).</td>
+</tr>
+<tr>
+<td><code>3</code></td>
+<td><strong>CANNOT DECIDE</strong> — an input the validator needs to decide is absent: anchor
+evidence for a claimed anchor, trust anchors for P3, or a profile-specific verifier this validator is
+not. The validator MUST name the missing input.</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<p><strong>Why code 3 exists.</strong> An instrument that cannot return "undecided" returns something
+else instead. A claimed anchor that cannot be checked is neither conformant nor refuted, and
+reporting it as either would be a false statement; it is not conformant enough to pass, so 3 is
+non-zero (§10.3). This is not a nicety — it is the same discipline as the residual: the format says
+what it could not establish.</p>
+</section>
+
+<section id="zero-tooling">
+<h2>Verify without any tooling</h2>
+
+<p>The manifest is canonical and lists every file with its digest, so a verifier with nothing but a
+POSIX shell can check the file set without any validator. This one-liner is a normative property of
+the format: a manifest whose canonical form does not admit it is non-conformant (§4.6 MA-21).</p>
+
+<pre><code>grep -o '{"path":"[^"]*","sha256":"[0-9a-f]*"' package.json |
+  sed 's/{"path":"\([^"]*\)","sha256":"\([0-9a-f]*\)"/\2  \1/' > SHA256SUMS
+sha256sum -c SHA256SUMS</code></pre>
+
+<p>MEASURED, run from inside a copy of <code>vectors/01-minimal-conformant/pkg</code> made in a
+temporary directory — the one-liner writes <code>SHA256SUMS</code> into the current directory, so do
+not run it inside the repository unless you mean to add that file. The three lines below are the
+written <code>SHA256SUMS</code> followed by <code>sha256sum -c</code>, exit code <code>0</code>:</p>
+
+<pre><code>abf920fbb49003e1b06badc085e74f8396713bca64d2f123eccdb256e6a36bad  records.jsonl
+798dab2402394de24954a4e5d0b8c806d8185ac2e54a95ec3ef22e1aeeba807f  notes.md
+records.jsonl: OK
+notes.md: OK</code></pre>
+
+<p>What that check covers is the file set: every listed file present, and each file's bytes equal to
+the digest the manifest states. What it does not cover is everything above the file list — the record
+envelopes, the per-stream sequence and predecessor chain, the manifest counts, the scope vocabulary
+and the anchor claim (INTERPRETATION, from §4.4 and §7). For those you need the validator.</p>
+</section>
+
+<section id="produce">
+<h2>Produce: what a second project must build</h2>
+
+<p>There is no library and no service. Production is decentralised and cheap; checking is centralised
+and shared — an adopter does not reimplement the validator, it runs the published one, or reads it
+and writes its own against the specification (Annex F). A project that already writes dated records
+to durable files needs exactly two things:</p>
+
+<ol>
+<li><strong>An emitter</strong> that puts its records into the envelope of §6.2: canonicalise each
+body, compute <code>body_sha</code>, assign <code>stream</code> and <code>seq</code>, wire
+<code>prev</code>, print the stream manifest first. For a project whose records are already one JSON
+object per line, Annex F prices this at roughly 80–120 lines in any language.</li>
+<li><strong>A packager</strong> that lists its files with digests, writes a canonical manifest with an
+honest scope, a <code>prev</code> from a one-line state file, and <code>anchored:false</code> — Annex F
+prices it at roughly 60–100 lines.</li>
+</ol>
+
+<p>Those two line counts are the standard's own estimate (Annex F), not a measurement of any
+particular project; treat them as a PROJECTION in the §0.4 sense.</p>
+
+<p><strong>Annex E</strong> is a worked package written out by hand with <code>printf</code> and
+<code>sha256sum</code>: two files, one shell, no network, no keys, no service. It is the whole of what
+a second project must produce to start, and a stranger can copy it. <a href="../README.md"><code>README.md</code></a>
+records that executing that example verbatim, in an empty directory, with nothing from the repository
+on the path except the validator, produces a package the validator reports CONFORMANT (exit 0) — that
+is the README's measurement; this page did not re-run it.</p>
+
+<p>Do not expect a validator to live inside a package. A package is not required to carry one, and a
+validator found inside a package proves nothing about that package, because it sits inside the
+directory the operator can rewrite; checkability comes from the published validator or from the
+verifier's own implementation, obtained through a channel the operator does not control (§4.5
+MA-20).</p>
+</section>
+
+<section id="chain">
+<h2>Chain and anchor: the two layers that look outside the package</h2>
+
+<p>Two verifier inputs arm the two layers that reach beyond the package directory (§10.2 MA-69).
+Neither is required for the base tier — and an unarmed layer must never read as a pass (§7, §10.4
+item 6).</p>
+
+<h3><code>--prev-package DIR</code> — arms layer 3</h3>
+
+<p>Without it, a record dropped between two packages is invisible: the omission happened outside the
+package you hold, and nothing inside this package records that it ever existed. MEASURED, both arms
+on <code>vectors/11-chain-omission</code> — first the successor alone, exit code <code>0</code>, with
+the layer reported as unarmed. Trimmed to the <code>layers</code> block and the verdict:</p>
+
+<pre><code>layers
+  layer 0  body digests        checked
+  layer 1  stream continuity   checked
+  layer 2  package digest     20be1945067e73fbffebabd55d2408d1241c74db7a934304bd49b83d6c72ecf7
+  layer 3  package chain       not armed (no --prev-package given) — omission across packages is NOT checked
+  layer 4  anchor              not claimed by this package
+
+verdict      CONFORMANT</code></pre>
+
+<p>Now the same package with its predecessor supplied — the same omission, exit code <code>1</code>.
+Trimmed to the refusal and the verdict:</p>
+
+<pre><code>sh validator/martelage-verify --prev-package vectors/11-chain-omission/pkg-1 vectors/11-chain-omission/pkg-2</code></pre>
+
+<pre><code>refusals
+  chain: stream 'note' is not a prefix of the same stream in the supplied previous package — records were dropped, re-ordered or rewritten across packages (§7.4.2 MA-50)
+
+verdict      NON-CONFORMANT</code></pre>
+
+<p>That is the whole power of the layer, and it is bounded exactly as §7.4.3 says: it converts a
+silent omission into a break visible one package later — <em>if someone kept the earlier package</em>
+— and it does not stop an operator who starts a fresh chain and is watched by nobody (§7.4.3
+MA-51).</p>
+
+<h3><code>--anchor-evidence HEX|FILE</code> — arms the anchor</h3>
+
+<p>"Anchored" is a property of (package, verifier's evidence), not of the package alone: the same
+package is verified-anchored for a verifier who brought the holder's digest, and cannot be decided
+for one who did not (§9.5 MA-66). MEASURED on <code>vectors/04-anchor-unverifiable</code>, a package
+claiming a p1 anchor with no evidence supplied — exit code <code>3</code>. Trimmed to the
+<code>anchor</code> block, the <code>not decidable</code> block and the verdict:</p>
+
+<pre><code>anchor
+  CLAIMED — profile 'p1-second-party-digest', binds 'manifest-digest'
+  claim: holder 'witness@example-archive', channel 'ask witness@example-archive for the digest of this package'
+
+not decidable
+  anchor: profile p1 is claimed but --anchor-evidence was not supplied — the holder's digest is the input this check needs (§10.3 MA-70)
+
+verdict      CANNOT DECIDE — 1 input(s) this validator needs were absent</code></pre>
+
+<p>And the same claim with the holder's digest supplied
+(<code>vectors/05-anchored-verified/evidence.txt</code>) — exit code <code>0</code>. Trimmed to the
+<code>anchor</code> block and the verdict:</p>
+
+<pre><code>sh validator/martelage-verify --anchor-evidence vectors/05-anchored-verified/evidence.txt vectors/05-anchored-verified/pkg</code></pre>
+
+<pre><code>anchor
+  ANCHORED — profile 'p1-second-party-digest', binds 'manifest-digest'
+  claim: holder 'witness@example-archive', channel 'ask witness@example-archive for the digest of this package'
+  evidence: the holder's digest equals this package's digest — VERIFIED (§9.3 MA-64)
+
+verdict      CONFORMANT</code></pre>
+
+<p>Three profiles exist at this version (§9.3): <code>p1-second-party-digest</code>, a digest of the
+package held by an identified party other than the operator — the base validator verifies it fully;
+<code>p2-append-only-log</code>, an entry in a ledger held by someone else — the base validator can
+compare a digest the log states to the package digest, but a matching digest still leaves inclusion
+undecided, so it reports exit 3 and names what it could not check; and
+<code>p3-eidas-qualified-seal-asic-e</code>, a qualified seal by a legal person — the base validator
+cannot verify a signature, so it reports exit 3 and names the profile-specific verifier it is not. A
+seal made with the operator's own key is worthless against the operator, because they hold the key
+(§9.3). An anchor never says the record is true or complete: it says a digest existed, at a time, by
+someone else (§7.5 MA-52, §3.7 MA-15).</p>
+</section>
+
+<section id="limits">
+<h2>What you should not expect</h2>
+
+<p>A validator that did not say what it cannot check would be an advertisement. Every validator must
+admit the following (§10.7 MA-74):</p>
+
+<ul>
+<li>whether the record is <strong>true</strong>;</li>
+<li>whether the package is <strong>complete</strong> — all that ever existed;</li>
+<li>anything that happened <strong>before the first observation or the first anchor</strong> (§3.5);</li>
+<li>the <strong>producer's binaries</strong>;</li>
+<li>the <strong>honesty of a witness</strong>, including a same-host witness (§3.6);</li>
+<li><strong>where a witness runs</strong>, or whether it is outside the audited subject's reach: the
+package can say so in <code>bound[]</code> or in its scope, and that statement is the producer's
+claim, not a checked fact;</li>
+<li>whether a <code>subject.id</code> is a <strong>digest</strong> rather than a hostname or an
+account name: a validator refuses the path shapes it can see and cannot distinguish the rest
+(§5.2.3);</li>
+<li><strong>who may read the records</strong>: a payload's own readability classification is a
+classification by the publisher, and this standard enforces nothing about it — a validator only
+echoes it.</li>
+</ul>
+
+<p>The same limits seen from the package's side — what a package is not, and the residual every
+validator prints — are on <a href="index.html#why">the first page</a>. In one line: a package proves
+what it contains was not altered after it left; it cannot prove it is all there was, and against an
+operator who rewrote everything before the first anchor it proves nothing.</p>
+</section>
+
+<section id="evidence">
+<h2>Where the evidence lives</h2>
+
+<p>The repository ships thirty-three hand-made packages under <code>vectors/</code>, each with an
+<code>expected.txt</code> recording the run, the expected exit code, the literal lines it must print,
+and the <code>MA-</code> identifiers the case exercises (MEASURED: 33 directories, 33
+<code>expected.txt</code> files). None of them is exported from a producer system; they were
+constructed for the standard (<a href="../README.md"><code>README.md</code></a>).</p>
+
+<p><strong>A standard whose only validator has never rejected anything is a description of its
+author's output.</strong> So the claim that the validator can fail is itself measured: take a copy of
+<code>validator/martelage-verify</code>, delete the one line that compares a record's
+<code>prev</code> to its predecessor's <code>body_sha</code> (line 828 of the file as shipped), leave
+everything else alone — <code>sh -n</code> on the mutant is clean — and run the vector built for
+exactly that check. MEASURED on this tree, both runs trimmed to the refusal block and the verdict:</p>
+
+<pre><code># as shipped
+$ sh validator/martelage-verify vectors/02-broken-predecessor/pkg
+refusals
+  payload: records.jsonl stream 'note': prev at seq 2 does not name seq 1; 
+
+verdict      NON-CONFORMANT
+exit=1
+
+# mutant: line 821 deleted
+$ sh /tmp/noprev vectors/02-broken-predecessor/pkg
+refusals
+  none
+
+verdict      CONFORMANT
+exit=0</code></pre>
+
+<p>The mutant still reports <code>0</code> on <code>vectors/01-minimal-conformant</code> — the
+mutation removed that check and nothing else (MEASURED). Vector 02 was built for exactly this: its
+sequence numbers, counts, head and every digest are consistent, so the <code>prev</code> comparison is
+the only check that can catch it. <a href="../README.md"><code>README.md</code></a> lists one such
+mutant for each check added by review; a check whose removal changes nothing is not load-bearing.</p>
+</section>
+
+</main>
+
+<footer>
+<p>Specification: <a href="../spec/MARTELAGE-0.1.md"><code>spec/MARTELAGE-0.1.md</code></a>. Repository
+and licence: <a href="../README.md"><code>README.md</code></a>,
+<a href="../LICENSE"><code>LICENSE</code></a>.</p>
+<p>Raising a defect: open one against the <em>sentence</em>, not the code — quote the
+<code>MA-</code> identifier and the text, and say what it lets a producer or a verifier claim that
+the format cannot deliver (see <a href="../README.md"><code>README.md</code></a>, "Raising a
+defect").</p>
+</footer>
+</body>
+</html>
