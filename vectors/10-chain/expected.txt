@@ -1,9 +1,9 @@
 vector: 10-chain
 what:   two packages in a chain: pkg-2 records pkg-1's digest in prev.package_sha
         and carries pkg-1's records as a prefix plus one more
-run:    sh validator/evp-verify --prev-package vectors/10-chain/pkg-1 vectors/10-chain/pkg-2
+run:    sh validator/martelage-verify --prev-package vectors/10-chain/pkg-1 vectors/10-chain/pkg-2
 exit:   0
-also:   sh validator/evp-verify vectors/10-chain/pkg-2   ->  exit 0, with
+also:   sh validator/martelage-verify vectors/10-chain/pkg-2   ->  exit 0, with
         "layer 3  package chain       not armed" printed (an unarmed layer must
         never read as a pass)
-requirements exercised: EV-49, EV-50, EV-71
+requirements exercised: MA-49, MA-50, MA-71

@@ -1,4 +1,4 @@
-# EVP — the Evidence Package standard
+# Martelage — the Evidence Package standard
 
 **Status: draft 0.1.** This repository holds the standard, its reference validator, and the test
 vectors that prove the validator can fail. Nothing here is committed to a registry, published by a
@@ -19,9 +19,9 @@ reader cannot credit the weakest layer with the strength of the strongest.
 
 | file | what it is |
 |---|---|
-| `spec/EVP-0.1.md` | the standard. Every normative requirement carries an identifier (`EV-1` … `EV-81`) so a conformance report can cite it. |
-| `validator/evp-verify` | the reference validator: POSIX shell + the set §10.1 names (`awk`, `sed`, `grep`, `cmp`, `sort`, `sha256sum`, `tr`, `cut`, `head`, `tail`, `wc`, `find`, `mktemp`, `rm`, `cat`). No network, no interpreter beyond those, no keys, no service, no producer. |
-| `vectors/` | twenty-five hand-made packages with their expected results. Constructed for the standard; none is exported from a producer system. |
+| `spec/MARTELAGE-0.1.md` | the standard. Every normative requirement carries an identifier (`MA-1` … `MA-82`) so a conformance report can cite it. |
+| `validator/martelage-verify` | the reference validator: POSIX shell + the set §10.1 names (`awk`, `sed`, `grep`, `cmp`, `sort`, `sha256sum`, `tr`, `cut`, `head`, `tail`, `wc`, `find`, `mktemp`, `rm`, `cat`). No network, no interpreter beyond those, no keys, no service, no producer. |
+| `vectors/` | thirty hand-made packages with their expected results. Constructed for the standard; none is exported from a producer system. |
 | `LICENSE` | the licence split: specification text CC BY 4.0, code Apache-2.0. |
 
 The standard is published on its own. It defines concepts — a record envelope, a stream, a package
@@ -32,8 +32,8 @@ the one place a specific system is named, and it is informative.
 ## Running the validator
 
 ```sh
-sh validator/evp-verify vectors/01-minimal-conformant/pkg        # exit 0
-sh validator/evp-verify --help
+sh validator/martelage-verify vectors/01-minimal-conformant/pkg        # exit 0
+sh validator/martelage-verify --help
 ```
 
 Exit codes are the gate, not the tail of the output:
@@ -84,6 +84,14 @@ same thing, plus the requirement identifiers the case exercises.
 | 23b | `23` without `--anchor-evidence` | the same package: refused, and undecided as well | 1 | **1** |
 | 24 | `24-duplicate-file-entry` | one file listed twice in `files[]` | 1 | **1** |
 | 25 | `25-unknown-fields` | two keys this standard does not define | 0 | **0** |
+| 26 | `26-kind-not-stream` | `kind` "other" on a stream named `note` — §6.2 makes them equal at payload contract v1 | 1 | **1** |
+| 27 | `27-phantom-stream` | line 1 declares a stream `n:5` with a head, and no record is on it | 1 | **1** |
+| 27b | `27` with the legitimate empty declaration | `n:0`, head `null`, and `counts.streams` counting it | 0 | **0** |
+| 28 | `28-p2-contradicted-evidence` + wrong `--anchor-evidence` | a p2 claim whose evidence states a different digest | 1 | **1** |
+| 28b | `28` + matching evidence | the digest matches; inclusion is still not checkable | 3 | **3** |
+| 29 | `29-symlink` | an unlisted symlink pointing out of the package | 1 | **1** |
+| 29b | `29` with the link listed | a listed symlink whose digest was computed through the link | 1 | **1** |
+| 30 | `30-residual-on-usage-error` | the residual on an exit-2 usage error that names a package | 2 | **2** |
 
 11b is the residual of §7.4.3 in one line: without the predecessor, a dropped record is invisible,
 and the validator says the layer was not armed rather than implying a pass.
@@ -94,6 +102,13 @@ checks, and each has a mutant of the validator that removes exactly that check a
 going to the wrong verdict — see "each new check has a mutant" below. A check with no vector and no
 mutant is a claim, not a check.
 
+Vectors 26–30 close a second review. Four of them enforce text that was already normative (§6.2
+`kind`/`stream`, §6.4/§7.2.1 a declared stream with no records, §9.3/§10.3 a contradicted p2 anchor,
+§4.4 an unlisted or listed symlink); the fifth covers §3.3: the residual must be printed on a run
+that names a package even when the run ends at exit 2 for a usage error. The symlink rule was not in
+the text at all, so it was added as **MA-82** — the next free identifier, nothing renumbered. Each of
+the five has a mutant row below, and each vector's `expected.txt` states why it fails without its fix.
+
 ## The validator can fail — a mutation of itself
 
 A standard whose only validator has never rejected anything is a description of its author's output.
@@ -101,15 +116,15 @@ So: remove the predecessor-chain check from a copy of the validator, and vector 
 caught.
 
 ```
-$ cp validator/evp-verify /tmp/evp-verify-noprev
+$ cp validator/martelage-verify /tmp/martelage-verify-noprev
 # delete the one line that compares a record's prev to its predecessor's body_sha
-$ sh validator/evp-verify vectors/02-broken-predecessor/pkg
+$ sh validator/martelage-verify vectors/02-broken-predecessor/pkg
 refusals
   payload: records.jsonl stream 'note': prev at seq 2 does not name seq 1;
 verdict      NON-CONFORMANT
 exit=1
 
-$ sh /tmp/evp-verify-noprev vectors/02-broken-predecessor/pkg
+$ sh /tmp/martelage-verify-noprev vectors/02-broken-predecessor/pkg
 refusals
   none
 verdict      CONFORMANT
@@ -142,20 +157,28 @@ check whose removal changes nothing is not load-bearing.
 | `claim` is null when `anchored` is false | 22 | 1 | **0** |
 | a claim value may not be a bare digest | 23 | 1 | **0** |
 | a file appears exactly once in `files[]` | 24 | 1 | **0** |
+| the residual on an exit-2 usage error that names a package | 30 | residual printed | **silent (still exit 2)** |
+| `kind` equals `stream` at payload contract v1 | 26 | 1 | **0** |
+| a declared stream must be the stream the records are on | 27 | 1 | **0** |
+| the p2 evidence digest is compared to the package digest | 28 | 1 | **3** |
+| symlinks are enumerated and a listed symlink is refused | 29 | 1 | **0** (both arms) |
 
 Two of these are the difference between a report that names what it could not check and one that does
 not: the first row is vector 04's own "must print" line, and vector 23b shows the harder case — a
 package that is refused *and* undecided reports exit 1, and still names the input it could not
-check, because a refusal must not make an undecided check invisible (EV-71).
+check, because a refusal must not make an undecided check invisible (MA-71).
 
 ## The validator runs on a second shell and a second awk
 
 The whole vector suite above was re-run under `busybox sh` with `busybox awk`, `sed`, `grep`, `cmp`
 and `sha256sum` — a different shell and a different awk implementation from the ones used for the
-table — and every exit code and every finding was identical. The run was repeated for the thirteen
-vectors added by the review, with the same result: 30 of 30 invocations, same exit code, same
-findings, same must-print lines. That is what "POSIX shell and
-coreutils" is supposed to mean, so it was measured rather than asserted.
+table. All 39 invocations (30 vector runs plus the 9 documented second arms) return the same exit
+code, and 38 of 39 produce byte-identical stdout and stderr. The exception is measured and named:
+vector 16, a NUL byte inside a record body, is refused by both awks (exit 1) with different refusal
+text, because `busybox awk` and `gawk` split a NUL-bearing line differently. That is a difference
+between two awks' handling of a byte no conformant package may carry, not a difference in the
+verdict. That is what "POSIX shell and coreutils" is supposed to mean, so it was measured rather than
+asserted.
 
 ## A producer that shares no code with the validator
 
@@ -183,7 +206,7 @@ that is a reading of a document, not a measurement of a package, and it is marke
 
 ## Raising a defect
 
-Open an issue against the sentence, not the code: quote the `EV-` identifier and the text, and say
+Open an issue against the sentence, not the code: quote the `MA-` identifier and the text, and say
 what it lets a producer or a verifier claim that the format cannot deliver. A defect report that
 shows a mechanism implying more than it buys is the most valuable kind, because that is the failure
 mode this standard exists to prevent.

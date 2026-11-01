@@ -1,0 +1,24 @@
+vector: 29-symlink
+what:   pkg carries an unlisted symlink, "leak", pointing at /etc/hostname — a
+        file outside the package. pkg-listed carries a symlink, "link", pointing
+        at notes.md, and files[] lists it with the digest computed THROUGH the
+        link, so every listed byte checks out. §4.4 (MA-19) requires an unlisted
+        file to be refused, and MA-82 requires every entry to be a regular file:
+        a link carries its target's bytes, and its target lies outside the
+        package and can be replaced after the manifest is written without any
+        listed byte moving. The enumeration used 'find . -type f', which never
+        sees a symlink, so both packages passed
+run:    sh validator/martelage-verify vectors/29-symlink/pkg
+exit:   1
+also:   sh validator/martelage-verify vectors/29-symlink/pkg-listed   ->  exit 1:
+        a listed symlink is refused as a link, not accepted because its digest
+        matches. (Its target is inside the package so the vector is
+        reproducible on any host; the rule does not depend on where the target is)
+must print:
+  - "'leak' is in the package but not listed in the manifest"
+requirements exercised: MA-19, MA-82
+why it fails without the fix: with the enumeration reverted to '-type f' and the
+        listed-symlink refusal removed, both packages report CONFORMANT (exit 0) —
+        measured on the pre-fix validator. The unlisted arm needs no digest, so it
+        cannot be caught by any digest check; the listed arm passes every digest
+        check by construction

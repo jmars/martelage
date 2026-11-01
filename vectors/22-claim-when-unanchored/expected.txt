@@ -3,8 +3,8 @@ what:   anchored is false and a claim object is present. §9.2 requires all thre
         of profile, binds and claim to be null when anchored is false; the
         validator checked profile and binds and let the claim through, so a
         package could carry an unhonoured claim under an honest "alone"
-run:    sh validator/evp-verify vectors/22-claim-when-unanchored/pkg
+run:    sh validator/martelage-verify vectors/22-claim-when-unanchored/pkg
 exit:   1
 must print:
   - "anchored=false but claim is not null"
-requirements exercised: EV-63
+requirements exercised: MA-63

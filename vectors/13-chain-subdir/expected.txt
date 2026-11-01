@@ -4,11 +4,11 @@ what:   the predecessor keeps its records in a SUBDIRECTORY, and the current
         passes; only the chain can see the omission — and only if it enumerates
         the predecessor's record stream files from the predecessor's own
         manifest instead of globbing the top level
-run:    sh validator/evp-verify --prev-package vectors/13-chain-subdir/pkg-1 \
+run:    sh validator/martelage-verify --prev-package vectors/13-chain-subdir/pkg-1 \
           vectors/13-chain-subdir/pkg-2
 exit:   1
-also:   sh validator/evp-verify vectors/13-chain-subdir/pkg-2   ->  exit 0:
+also:   sh validator/martelage-verify vectors/13-chain-subdir/pkg-2   ->  exit 0:
         unarmed, the omission is invisible (the layer-3 residual of §7.4.3)
 must print:
   - "stream 'note' is not a prefix of the same stream in the supplied previous package"
-requirements exercised: EV-50, EV-71
+requirements exercised: MA-50, MA-71

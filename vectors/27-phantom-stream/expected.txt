@@ -1,0 +1,29 @@
+vector: 27-phantom-stream
+what:   line 1 of records.jsonl declares a second stream, "ghost", with n=5 and a
+        64-hex head, and no record anywhere is on it. Every stream the RECORDS
+        derive is internally consistent, so the per-stream loop and the record
+        counts say nothing about the declaration. §6.4 (MA-37) makes streams the
+        mapping of each stream IN THIS FILE to its count and head, and §7.2.1
+        (MA-43) makes n and head agree with the records actually present: a
+        declared stream that holds no record must be declared n:0, head:null. A
+        phantom stream is a package claiming a chain that is not there
+run:    sh validator/martelage-verify vectors/27-phantom-stream/pkg
+exit:   1
+also:   sh validator/martelage-verify vectors/27-phantom-stream/pkg-empty-ok
+          ->  exit 0: the legitimate declaration, n:0 with head null, passes
+        (with counts.streams counting it — see below)
+must print:
+  - "declares stream 'ghost' with n=5"
+  - "but the payload holds no record on it"
+  - "counts.streams=1 but the payload declares 2 stream(s)"
+requirements exercised: MA-31, MA-37, MA-43
+why it fails without the fix: with the declared-stream loop deleted, this vector
+        reports CONFORMANT (exit 0) — measured on the pre-fix validator. Both
+        refusals follow from the phantom declaration: the first names the stream,
+        the second follows because §5.2.9 (MA-31) counts the distinct stream names
+        the record stream files carry, and a declared stream is one of them.
+        Behaviour change, stated: counts.streams is now read as the DECLARED set.
+        A package declaring an empty stream and not counting it was accepted
+        before the fix and is refused now; the same package with counts.streams
+        counting it was refused before the fix and is accepted now (pkg-empty-ok,
+        measured both ways)

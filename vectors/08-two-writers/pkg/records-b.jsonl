@@ -1,2 +1,2 @@
-{"contract":"evp-example-notes","v":1,"kind":"manifest","generator":"by-hand","streams":{"note":{"n":1,"head":"4905797bd21e6ab3910e84bf833498e5a657383139d9eeff3198a05aea77921c"}},"counts":{"records":1}}
+{"contract":"martelage-example-notes","v":1,"kind":"manifest","generator":"by-hand","streams":{"note":{"n":1,"head":"4905797bd21e6ab3910e84bf833498e5a657383139d9eeff3198a05aea77921c"}},"counts":{"records":1}}
 {"v":1,"kind":"note","stream":"note","seq":1,"id":"note:1","writer":"writer-b","mark":"MEASURED","ts":1700000050,"body":{"event":"b","detail":"from b"},"body_sha":"4905797bd21e6ab3910e84bf833498e5a657383139d9eeff3198a05aea77921c","prev":null}

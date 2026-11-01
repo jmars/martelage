@@ -1,10 +1,15 @@
 vector: 14-manifest-whitespace
 what:   the manifest is one line and every digest in it is correct, but a single
-        space sits between tokens: '"v": 1'. Not canonical JSON (§5.1.1), and it
-        silently breaks the zero-tooling one-liner of §4.6, which greps the
-        canonical byte shape of a files[] entry
-run:    sh validator/evp-verify vectors/14-manifest-whitespace/pkg
+        space sits between tokens: '"v": 1'. §5.1.1 (MA-22) requires canonical
+        JSON — no insignificant whitespace anywhere outside a string value — so
+        the package is non-conformant
+what this does NOT exercise: MA-21, the zero-tooling one-liner of §4.6. The space
+        is outside files[], so the one-liner still prints "records.jsonl: OK" and
+        exits 0 on this package (measured). A space INSIDE a files[] entry is what
+        would break the grep of §4.6; this vector does not carry one. An earlier
+        version of this file claimed the one-liner broke here, which was not true
+run:    sh validator/martelage-verify vectors/14-manifest-whitespace/pkg
 exit:   1
 must print:
   - "insignificant whitespace outside string values"
-requirements exercised: EV-21, EV-22
+requirements exercised: MA-22

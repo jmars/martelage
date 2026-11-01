@@ -1,1 +1,1 @@
-This package is a hand-made example for EVP-0.1.
+This package is a hand-made example for MARTELAGE-0.1.

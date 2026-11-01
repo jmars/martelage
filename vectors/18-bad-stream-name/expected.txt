@@ -4,8 +4,8 @@ what:   stream is "no te". This was the worse half of the same gap: the record
         the charset never produced one — the stream silently skipped EVERY
         layer-1 continuity check while still counting toward counts.streams.
         A name outside the charset is now refused, not skipped
-run:    sh validator/evp-verify vectors/18-bad-stream-name/pkg
+run:    sh validator/martelage-verify vectors/18-bad-stream-name/pkg
 exit:   1
 must print:
   - "stream name 'no te' is not ^[A-Za-z][A-Za-z0-9_.-]*$"
-requirements exercised: EV-35, EV-43
+requirements exercised: MA-35, MA-43

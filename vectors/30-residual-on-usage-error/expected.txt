@@ -1,0 +1,29 @@
+vector: 30-residual-on-usage-error
+what:   a conformant package is named and then an unknown option follows it, so
+        the run ends at exit 2 with no report. §3.3 (MA-12) requires the residual
+        sentence on every run that NAMES A PACKAGE, "including a run that ends at
+        exit code 2 because the package could not be read: the residual is not a
+        claim about the package, so it is not dropped when the report is". Only a
+        run that names no package at all is exempt. The three exit-2 usage errors
+        that name a package (an unknown option after it, a second package
+        directory, an unexpected trailing argument) printed no residual, while the
+        unreadable-package exits did
+run:    sh validator/martelage-verify vectors/30-residual-on-usage-error/pkg --bogus
+exit:   2
+also:   sh validator/martelage-verify vectors/30-residual-on-usage-error/pkg \
+          vectors/30-residual-on-usage-error/pkg   ->  exit 2, residual printed
+        sh validator/martelage-verify vectors/30-residual-on-usage-error/pkg -- x
+          ->  exit 2, residual printed
+        sh validator/martelage-verify   ->  exit 2, NO residual: no package is
+        named, so there is nothing to report on (MA-12's one exemption)
+must print:
+  - "unknown option --bogus"
+  - "A package proves that what it contains was not altered after it left"
+  - "A coherent tamper performed before the first observation is invisible"
+requirements exercised: MA-12, MA-70
+why it fails without the fix: the exit code is 2 either way, so this vector's
+        asymmetry is in what it PRINTS: with the residual call removed from the
+        usage-error paths, the two residual fragments are absent (measured on the
+        pre-fix validator, exit 2 and no residual on stdout or stderr). The
+        package is conformant on its own (exit 0 without the bogus option), so
+        the run has a package to report on and the residual is owed

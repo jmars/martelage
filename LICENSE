@@ -1,13 +1,13 @@
-Copyright (c) 2026 the EVP authors.
+Copyright (c) 2026 the Martelage authors.
 
 This repository is released under two licences, split by what a file is:
 
-  spec/EVP-0.1.md, vectors/**, README.md
+  spec/MARTELAGE-0.1.md, vectors/**, README.md
       CC BY 4.0 — Creative Commons Attribution 4.0 International
       full text: LICENSE-CC-BY-4.0
       https://creativecommons.org/licenses/by/4.0/
 
-  validator/evp-verify and any other code
+  validator/martelage-verify and any other code
       Apache License 2.0
       full text: LICENSE-APACHE
       https://www.apache.org/licenses/LICENSE-2.0
@@ -15,16 +15,16 @@ This repository is released under two licences, split by what a file is:
 Attribution for the specification text (CC BY 4.0, section 3(a)(1)): you must give appropriate
 credit, provide a link to the licence, and indicate if changes were made. A convenient form:
 
-  "EVP-0.1 — The Evidence Package Standard" by the EVP authors, CC BY 4.0.
+  "MARTELAGE-0.1 — The Evidence Package Standard" by the Martelage authors, CC BY 4.0.
   Changes: <none | describe>
 
 The test vectors under vectors/ are part of the specification's conformance material and are
 released under CC BY 4.0 with it.
 
 A third party claims conformance by publishing a statement in its own name that its producer emits
-packages conformant with "evp 0.1", naming the requirement identifiers it relies on and any it does
+packages conformant with "martelage 0.1", naming the requirement identifiers it relies on and any it does
 not satisfy with the reason. No registration, permission or fee is required, and no certification by
-the EVP authors is implied. The template is Annex C of spec/EVP-0.1.md.
+the Martelage authors is implied. The template is Annex C of spec/MARTELAGE-0.1.md.
 
 There is no warranty. The standard states its own limits in §3; read them before relying on a
 package.

@@ -1,8 +1,8 @@
 vector: 03-stream-gap
 what:   a record is removed from the middle of a stream and the following record
         keeps its own number: seq runs 1, 2, 4 while the stream declares 3 records
-run:    sh validator/evp-verify vectors/03-stream-gap/pkg
+run:    sh validator/martelage-verify vectors/03-stream-gap/pkg
 exit:   1
 must print:
   - "seq 4 where 3 was expected"
-requirements exercised: EV-43
+requirements exercised: MA-43

@@ -3,8 +3,8 @@ what:   the top-level key "kind" appears twice. JSON does not say which one wins
         so a reader that takes the first and a reader that takes the last disagree
         about the same bytes: §5.1.1 forbids it, and before this vector was added
         the validator silently took the first
-run:    sh validator/evp-verify vectors/15-manifest-duplicate-key/pkg
+run:    sh validator/martelage-verify vectors/15-manifest-duplicate-key/pkg
 exit:   1
 must print:
   - "duplicate key 'kind'"
-requirements exercised: EV-22
+requirements exercised: MA-22

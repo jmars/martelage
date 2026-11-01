@@ -1,0 +1,26 @@
+vector: 28-p2-contradicted-evidence
+what:   the package claims a p2 anchor (append-only log) and the log's evidence is
+        supplied, but the digest that evidence states is not this package's
+        digest. §9.3 lets the base validator compare a digest the log states to
+        the package digest, and §10.3 puts a claimed anchor "that the evidence
+        contradicts" at exit 1. The validator never made the comparison, so a
+        refuted p2 claim read as CANNOT DECIDE — undecided, when it is refuted.
+        Inclusion in the log still cannot be re-checked without the log, so the
+        matching arm stays exit 3
+run:    sh validator/martelage-verify --anchor-evidence vectors/28-p2-contradicted-evidence/evidence-wrong.txt \
+          vectors/28-p2-contradicted-evidence/pkg
+exit:   1
+also:   sh validator/martelage-verify --anchor-evidence vectors/28-p2-contradicted-evidence/evidence-matching.txt \
+          vectors/28-p2-contradicted-evidence/pkg   ->  exit 3
+        the digest matches, so nothing is contradicted — but the log is not here,
+        and a match cannot decide inclusion (the P1 path behaves the same way at
+        its own level: a wrong digest is a refusal, a right one is verification)
+must print:
+  - "profile p2 is claimed but the evidence does not match"
+  - "the package digest is"
+requirements exercised: MA-61 (rule e), MA-64, MA-69, MA-70
+why it fails without the fix: with the comparison replaced by the old
+        unconditional cannot_decide, this vector reports CANNOT DECIDE (exit 3) —
+        measured on the pre-fix validator. The package is identical in both arms;
+        only the evidence file differs, so the exit code is decided by the
+        comparison and by nothing else

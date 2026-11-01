@@ -1,14 +1,14 @@
 vector: 25-unknown-fields
 what:   two keys this standard does not define sit at the top level of the
-        manifest. §5.2.11 (EV-33) and §11.5 (EV-80) require a reader to IGNORE
+        manifest. §5.2.11 (MA-33) and §11.5 (MA-80) require a reader to IGNORE
         them, count what it ignored per (object, field), and be able to report the
         counts — ignoring was implemented, counting and reporting were not. The
         package is conformant: an unknown field never causes a refusal
-run:    sh validator/evp-verify vectors/25-unknown-fields/pkg
+run:    sh validator/martelage-verify vectors/25-unknown-fields/pkg
 exit:   0
 must print:
   - "field(s) this validator does not know, counted per (object, field)"
   - "x-custom"
   - "x-other"
   - "verdict      CONFORMANT"
-requirements exercised: EV-33, EV-80, EV-71
+requirements exercised: MA-33, MA-80, MA-71

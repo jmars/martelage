@@ -1,0 +1,17 @@
+vector: 26-kind-not-stream
+what:   both records carry kind "other" while their stream is "note", and every
+        other byte is consistent: seq, id, prev, body_sha, the stream manifest's
+        n and head, counts, and the file digest. §6.2 (MA-35) says that at payload
+        contract v1 kind and stream are equal — they are separate keys only so a
+        later version can carry several kinds on one chain. The validator compared
+        neither, so a package could rename the kind of every record and pass
+run:    sh validator/martelage-verify vectors/26-kind-not-stream/pkg
+exit:   1
+must print:
+  - "kind 'other' and stream 'note' differ — at payload contract v1 they are equal"
+requirements exercised: MA-35
+why it fails without the fix: the kind/stream comparison is the only check that
+        sees this package. With the comparison deleted from the validator, this
+        vector reports CONFORMANT (exit 0) — measured on the pre-fix validator.
+        Note the stream manifest of line 1 carries kind "manifest" and no stream
+        key: it is not a record (§6.5 MA-38) and the comparison never reaches it

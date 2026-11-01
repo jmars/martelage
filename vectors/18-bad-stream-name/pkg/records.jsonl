@@ -1,3 +1,3 @@
-{"contract":"evp-example-notes","v":1,"kind":"manifest","streams":{"no te":{"n":2,"head":"6e28c56d1a81a586c4851cc29586d1dd14cda7469e074f1301d59d7b7c0c514b"}}}
+{"contract":"martelage-example-notes","v":1,"kind":"manifest","streams":{"no te":{"n":2,"head":"6e28c56d1a81a586c4851cc29586d1dd14cda7469e074f1301d59d7b7c0c514b"}}}
 {"v":1,"kind":"no te","stream":"no te","seq":1,"id":"no te:1","writer":"example","mark":"MEASURED","ts":1700000000,"body":{"event":"started","detail":"first note"},"body_sha":"19197768fe645dbc95636c0d216fd8ae089a851da99976b01ae1a2faa660cc8c","prev":null}
 {"v":1,"kind":"no te","stream":"no te","seq":2,"id":"no te:2","writer":"example","mark":"MEASURED","ts":1700000100,"body":{"event":"stopped","detail":"second note"},"body_sha":"6e28c56d1a81a586c4851cc29586d1dd14cda7469e074f1301d59d7b7c0c514b","prev":"19197768fe645dbc95636c0d216fd8ae089a851da99976b01ae1a2faa660cc8c"}

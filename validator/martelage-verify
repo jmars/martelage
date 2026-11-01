@@ -1,12 +1,12 @@
 #!/bin/sh
-# evp-verify — the EVP-0.1 reference validator.
+# martelage-verify — the MARTELAGE-0.1 reference validator.
 #
 # Runs offline with a POSIX shell, awk, sed, grep, sort, cmp and sha256sum.
 # No network, no interpreter beyond those, no key material, no service, no
 # producer. It verifies a base-tier package with no third party, no keys and
 # no trust anchors present.
 #
-# The contract this implements is spec/EVP-0.1.md §10 (EV-68..EV-75); the
+# The contract this implements is spec/MARTELAGE-0.1.md §10 (MA-68..MA-75); the
 # requirement identifiers below name the clause each check enforces.
 #
 # exit: 0 CONFORMANT | 1 NON-CONFORMANT | 2 USAGE/UNREADABLE | 3 CANNOT DECIDE
@@ -20,6 +20,9 @@ SEP=$(printf '\037')
 RESID1='  A package proves that what it contains was not altered after it left; it cannot prove that what it contains is all there was, and against an operator who rewrote everything before the first anchor it proves nothing.'
 RESID2='  A coherent tamper performed before the first observation is invisible to every mechanism in this standard.'
 residual_err() { printf '\n%s\n%s\n\n' "$RESID1" "$RESID2" >&2; }
+# MA-12/§3.3: the residual is printed on every run that names a package, an exit-2
+# usage error included. A run that names no package has nothing to report on.
+residual_if_pkg() { [ -n "$PKG" ] && residual_err; return 0; }
 
 PKG=
 PREV=
@@ -28,7 +31,7 @@ TRUST=
 
 usage() {
 	cat <<'EOF'
-usage: evp-verify [options] PACKAGE-DIR
+usage: martelage-verify [options] PACKAGE-DIR
 
   PACKAGE-DIR           a directory holding package.json (required)
 
@@ -54,28 +57,28 @@ while [ $# -gt 0 ]; do
 	case $1 in
 	-h | --help) usage; exit 0 ;;
 	--prev-package)
-		[ $# -ge 2 ] || { printf '%s: --prev-package needs a directory\n' "$PROG" >&2; exit 2; }
+		[ $# -ge 2 ] || { printf '%s: --prev-package needs a directory\n' "$PROG" >&2; residual_if_pkg; exit 2; }
 		PREV=$2; shift 2 ;;
 	--anchor-evidence)
-		[ $# -ge 2 ] || { printf '%s: --anchor-evidence needs a digest or a file\n' "$PROG" >&2; exit 2; }
+		[ $# -ge 2 ] || { printf '%s: --anchor-evidence needs a digest or a file\n' "$PROG" >&2; residual_if_pkg; exit 2; }
 		AEV=$2; shift 2 ;;
 	--trust-anchors)
-		[ $# -ge 2 ] || { printf '%s: --trust-anchors needs a directory\n' "$PROG" >&2; exit 2; }
+		[ $# -ge 2 ] || { printf '%s: --trust-anchors needs a directory\n' "$PROG" >&2; residual_if_pkg; exit 2; }
 		TRUST=$2; shift 2 ;;
 	--) shift; break ;;
-	-*) printf '%s: unknown option %s\n' "$PROG" "$1" >&2; usage >&2; exit 2 ;;
+	-*) printf '%s: unknown option %s\n' "$PROG" "$1" >&2; usage >&2; residual_if_pkg; exit 2 ;;
 	*)
-		[ -z "$PKG" ] || { printf '%s: more than one package directory given\n' "$PROG" >&2; exit 2; }
+		[ -z "$PKG" ] || { printf '%s: more than one package directory given\n' "$PROG" >&2; residual_if_pkg; exit 2; }
 		PKG=$1; shift ;;
 	esac
 done
 [ -n "$PKG" ] || { usage >&2; exit 2; }
-[ $# -eq 0 ] || { printf '%s: unexpected argument %s\n' "$PROG" "$1" >&2; exit 2; }
+[ $# -eq 0 ] || { printf '%s: unexpected argument %s\n' "$PROG" "$1" >&2; residual_if_pkg; exit 2; }
 
 [ -d "$PKG" ] || { printf '%s: %s is not a directory (exit 2)\n' "$PROG" "$PKG" >&2; residual_err; exit 2; }
 [ -r "$PKG/package.json" ] || { printf '%s: %s/package.json is missing or unreadable (exit 2)\n' "$PROG" "$PKG" >&2; residual_err; exit 2; }
 
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/evp-verify.XXXXXX") || { printf '%s: cannot create a work directory\n' "$PROG" >&2; exit 2; }
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/martelage-verify.XXXXXX") || { printf '%s: cannot create a work directory\n' "$PROG" >&2; exit 2; }
 trap 'rm -rf "$tmp"' EXIT
 trap 'exit 2' INT TERM HUP
 : >"$tmp/refusals"
@@ -83,6 +86,7 @@ trap 'exit 2' INT TERM HUP
 : >"$tmp/undecided"
 : >"$tmp/ignored"
 : >"$tmp/streams.list"
+: >"$tmp/declared.list"
 : >"$tmp/table"
 : >"$tmp/scope.report"
 : >"$tmp/files.report"
@@ -208,7 +212,7 @@ AWK
 # is refused, and the refusal names the byte offset.
 cat >"$tmp/rec.awk" <<'AWK'
 BEGIN { SEP = sprintf("%c", 31) }
-NR == 1 { next }   # line 1 is the stream manifest, not a record (EV-38)
+NR == 1 { next }   # line 1 is the stream manifest, not a record (MA-38)
 {
 	lineno = NR
 	if (parse()) {
@@ -219,6 +223,13 @@ NR == 1 { next }   # line 1 is the stream manifest, not a record (EV-38)
 		if (S ~ /^[A-Za-z][A-Za-z0-9_.-]*$/) {
 			g = tmp "/s." fi "." S
 			print SEQ SEP SHA SEP PREV SEP ID SEP TS SEP W >> g
+			close(g)
+		} else {
+			# a record whose stream name is outside the charset is not grouped
+			# into an s. file; its name is kept so the stream-manifest check can
+			# see that the stream does have records, bad name and all
+			g = tmp "/raw." fi
+			print S >> g
 			close(g)
 		}
 	} else {
@@ -317,8 +328,8 @@ mcount() { # number of elements in an array path
 }
 
 # order_ok <actual key list> <expected, space separated>
-# Unknown keys may appear anywhere (EV-33); the prescribed ones must all be
-# present and in the prescribed relative order (EV-23).
+# Unknown keys may appear anywhere (MA-33); the prescribed ones must all be
+# present and in the prescribed relative order (MA-23).
 order_ok() {
 	ACT=$1 EXP=$2 awk 'BEGIN {
 		na = split(ENVIRON["ACT"], a, ","); ne = split(ENVIRON["EXP"], e, ","); j = 1
@@ -334,7 +345,7 @@ order_ok() {
 }
 
 # unexpected <actual key list> <known, space separated>
-# EV-33/EV-80: a key this validator does not know is ignored and never guessed
+# MA-33/MA-80: a key this validator does not know is ignored and never guessed
 # at, but it is counted per (object, field) and reported (§10.4).
 unexpected() {
 	ACT=$1 EXP=$2 awk 'BEGIN {
@@ -355,7 +366,7 @@ count_ignored() { # $1 object label  $2 actual key list  $3 known keys
 }
 
 report() {
-	printf '%s — EVP-0.1 reference validator\n\n' "$PROG"
+	printf '%s — MARTELAGE-0.1 reference validator\n\n' "$PROG"
 	printf 'package      %s\n' "$PKG"
 	printf 'digest       %s   (sha256 of package.json: this is the package digest)\n' "$pkd"
 	printf 'standard     %s v%s (kind %s)\n' "${STD:-?}" "${VER:-?}" "${KIND:-?}"
@@ -414,18 +425,18 @@ report() {
 
 	printf '\nignored\n'
 	if [ -s "$tmp/ignored" ]; then
-		printf '  %s field(s) this validator does not know, counted per (object, field) — ignored, never guessed at (§5.2.11 EV-33, §11.5 EV-80):\n' \
+		printf '  %s field(s) this validator does not know, counted per (object, field) — ignored, never guessed at (§5.2.11 MA-33, §11.5 MA-80):\n' \
 			"$(wc -l <"$tmp/ignored" | tr -d ' ')"
 		cat "$tmp/ignored"
 	else
-		printf '  none — every key the manifest and the stream manifest(s) carry is one this validator knows (§5.2.11 EV-33)\n'
+		printf '  none — every key the manifest and the stream manifest(s) carry is one this validator knows (§5.2.11 MA-33)\n'
 	fi
 
 	printf '\nnot decidable\n'
 	if [ -s "$tmp/undecided" ]; then
 		cat "$tmp/undecided"
 	else
-		printf '  nothing — every check this validator implements could reach a verdict on this package (EV-70)\n'
+		printf '  nothing — every check this validator implements could reach a verdict on this package (MA-70)\n'
 	fi
 
 	printf '\nresidual\n'
@@ -436,19 +447,21 @@ report() {
 M="$PKG/package.json"
 MRAW=$(wc -c <"$M" | tr -d ' ')
 
-# no control bytes at all except one optional final newline (§5.1.3, EV-24)
+# no control bytes at all except one optional final newline (§5.1.3, MA-24)
 ctrl=$(LC_ALL=C tr -d '\040-\176\200-\377\012' <"$M" | wc -c | tr -d ' ')
 if [ "$ctrl" -gt 0 ]; then
-	refuse "manifest: contains $ctrl control byte(s) (a NUL or a raw control byte cannot be carried; §5.1.3 EV-24)"
+	refuse "manifest: contains $ctrl control byte(s) (a NUL or a raw control byte cannot be carried; §5.1.3 MA-24)"
 fi
 nl=$(LC_ALL=C tr -cd '\012' <"$M" | wc -c | tr -d ' ')
 if [ "$nl" -gt 1 ] || { [ "$nl" -eq 1 ] && [ -n "$(tail -c 1 "$M")" ]; }; then
-	refuse "manifest: spans more than one line — canonical JSON has no insignificant whitespace (§5.1.1 EV-22)"
+	refuse "manifest: spans more than one line — canonical JSON has no insignificant whitespace (§5.1.1 MA-22)"
 fi
 
-# no insignificant whitespace outside a string value (§5.1.1 EV-22). The
+# no insignificant whitespace outside a string value (§5.1.1 MA-22). The
 # newline check above is not enough: '"v": 1' is one line and still not
-# canonical, and it silently breaks the zero-tooling one-liner of §4.6 (EV-21).
+# canonical. A space INSIDE a files[] entry also breaks the zero-tooling
+# one-liner of §4.6 (MA-21); a space anywhere else does not — vector 14 measures
+# that the one-liner still passes on it, so MA-22 is what this check enforces.
 cat >"$tmp/canon.awk" <<'AWK'
 { s = s $0 }
 END {
@@ -471,7 +484,7 @@ END {
 AWK
 wsmsg=$(awk -f "$tmp/canon.awk" <"$M")
 [ $? -eq 0 ] ||
-	refuse "manifest: $wsmsg — canonical JSON has no insignificant whitespace outside string values (§5.1.1 EV-22)"
+	refuse "manifest: $wsmsg — canonical JSON has no insignificant whitespace outside string values (§5.1.1 MA-22)"
 
 if awk -f "$tmp/tok.awk" <"$M" >"$tmp/m.flat" 2>"$tmp/tok.err"; then
 	MOK=1
@@ -481,7 +494,7 @@ else
 	[ -n "$tokdiag" ] || tokdiag="the manifest is not JSON"
 	case $tokdiag in
 	duplicate\ key*)
-		refuse "manifest: $tokdiag — canonical JSON has no duplicate keys (§5.1.1 EV-22)" ;;
+		refuse "manifest: $tokdiag — canonical JSON has no duplicate keys (§5.1.1 MA-22)" ;;
 	*)
 		refuse "manifest: not parseable as JSON: $tokdiag$(head -1 "$tmp/tok.err")" ;;
 	esac
@@ -515,37 +528,37 @@ ABINDS=$(mval anchor.binds 2>/dev/null) || ABINDS=
 ACLAIM=$(mval anchor.claim 2>/dev/null) || ACLAIM=
 
 # ── §5.2 header checks ────────────────────────────────────────────────────
-if [ "$STD" != "evp" ]; then
-	refuse "manifest: standard is '${STD:-<absent>}', must be 'evp' (§5.2.1 EV-25)"
+if [ "$STD" != "martelage" ]; then
+	refuse "manifest: standard is '${STD:-<absent>}', must be 'martelage' (§5.2.1 MA-25)"
 fi
 if ! uint "${VER:-x}"; then
-	refuse "manifest: v is not an integer (§5.2.1 EV-25)"
+	refuse "manifest: v is not an integer (§5.2.1 MA-25)"
 elif [ "$VER" -ne 1 ]; then
-	refuse "manifest: v=$VER is not a version this validator supports (v1 only) — refused loudly, never parsed best-effort (§5.2.1 EV-25, §11.4 EV-79)"
+	refuse "manifest: v=$VER is not a version this validator supports (v1 only) — refused loudly, never parsed best-effort (§5.2.1 MA-25, §11.4 MA-79)"
 fi
 if [ "$KIND" != "package-manifest" ]; then
-	refuse "manifest: kind is '${KIND:-<absent>}', must be 'package-manifest' (§5.2.1 EV-25)"
+	refuse "manifest: kind is '${KIND:-<absent>}', must be 'package-manifest' (§5.2.1 MA-25)"
 fi
 for pair in "producer.id" "producer.component" "producer.version" "producer.contract" \
 	"subject.id" "subject.kind" "created_at" "prev.package_sha" "prev.how" \
 	"anchor.anchored" "anchor.profile" "anchor.binds" \
 	"counts.files" "counts.records" "counts.streams"; do
-	mval "$pair" >/dev/null 2>&1 || refuse "manifest: required field '$pair' is absent (§5.2 EV-26..EV-32)"
+	mval "$pair" >/dev/null 2>&1 || refuse "manifest: required field '$pair' is absent (§5.2 MA-26..MA-32)"
 done
-[ -n "$SUBJ" ] || refuse "manifest: subject.id is empty — a package must name a content identity (§5.2.3 EV-27)"
+[ -n "$SUBJ" ] || refuse "manifest: subject.id is empty — a package must name a content identity (§5.2.3 MA-27)"
 case $SUBJ in
 */* | . | ..)
-	refuse "manifest: subject.id '$SUBJ' is shaped like a filesystem path — subject.id must be a content identity (§5.2.3 EV-27)" ;;
+	refuse "manifest: subject.id '$SUBJ' is shaped like a filesystem path — subject.id must be a content identity (§5.2.3 MA-27)" ;;
 esac
 case $CAT in
 0 | 0.0*)
-	refuse "manifest: created_at is 0 — a timestamp MUST NOT be rendered as 0 to mean absent; write null instead (§5.2.4 EV-28)" ;;
+	refuse "manifest: created_at is 0 — a timestamp MUST NOT be rendered as 0 to mean absent; write null instead (§5.2.4 MA-28)" ;;
 esac
 
-# frozen key order of every object the schema names (§5.1.2 EV-23)
+# frozen key order of every object the schema names (§5.1.2 MA-23)
 chk_order() { # $1 path  $2 label  $3 expected
-	k=$(mkeys "$1" 2>/dev/null) || { refuse "manifest: $2 is absent or not an object (§5.2 EV-26..EV-32)"; return; }
-	msg=$(order_ok "$k" "$3") || refuse "manifest: $2 keys are not in the prescribed order: $msg (§5.1.2 EV-23)"
+	k=$(mkeys "$1" 2>/dev/null) || { refuse "manifest: $2 is absent or not an object (§5.2 MA-26..MA-32)"; return; }
+	msg=$(order_ok "$k" "$3") || refuse "manifest: $2 keys are not in the prescribed order: $msg (§5.1.2 MA-23)"
 }
 chk_order "" "the top level" "standard,v,kind,producer,subject,created_at,prev,files,scope,anchor,counts,bound"
 chk_order producer producer "id,component,version,contract"
@@ -555,7 +568,7 @@ chk_order scope scope "contains,not_contains"
 chk_order anchor anchor "anchored,profile,binds,claim"
 chk_order counts counts "files,records,streams"
 
-# EV-33/EV-80: count what was ignored, per (object, field), and report it
+# MA-33/MA-80: count what was ignored, per (object, field), and report it
 count_ignored "top level" "$(mkeys "" 2>/dev/null)" \
 	"standard v kind producer subject created_at prev files scope anchor counts bound"
 count_ignored producer "$(mkeys producer 2>/dev/null)" "id component version contract"
@@ -565,19 +578,19 @@ count_ignored scope "$(mkeys scope 2>/dev/null)" "contains not_contains"
 count_ignored anchor "$(mkeys anchor 2>/dev/null)" "anchored profile binds claim"
 count_ignored counts "$(mkeys counts 2>/dev/null)" "files records streams"
 
-# prev (EV-29)
+# prev (MA-29)
 case $PHOW in
 state | given)
-	hex64 "${PSHA:-}" || refuse "manifest: prev.how=$PHOW but prev.package_sha is not a 64-hex digest (§5.2.5 EV-29)" ;;
+	hex64 "${PSHA:-}" || refuse "manifest: prev.how=$PHOW but prev.package_sha is not a 64-hex digest (§5.2.5 MA-29)" ;;
 none)
-	[ "$PSHA" = "null" ] || refuse "manifest: prev.how=none but prev.package_sha is not null — a chain must not be fabricated (§5.2.5 EV-29)" ;;
+	[ "$PSHA" = "null" ] || refuse "manifest: prev.how=none but prev.package_sha is not null — a chain must not be fabricated (§5.2.5 MA-29)" ;;
 *)
-	refuse "manifest: prev.how is '${PHOW:-<absent>}', must be state, given or none (§5.2.5 EV-29)" ;;
+	refuse "manifest: prev.how is '${PHOW:-<absent>}', must be state, given or none (§5.2.5 MA-29)" ;;
 esac
 
 # ── §4.4 the file list ────────────────────────────────────────────────────
 NFILES=$(mcount files 2>/dev/null) || NFILES=0
-[ "$NFILES" -gt 0 ] || refuse "manifest: files[] is absent or empty (§4.4 EV-19)"
+[ "$NFILES" -gt 0 ] || refuse "manifest: files[] is absent or empty (§4.4 MA-19)"
 : >"$tmp/listed"
 : >"$tmp/files.report"
 nf=0
@@ -588,80 +601,90 @@ while [ "$nf" -lt "$NFILES" ]; do
 	fb=$(mval "files[$nf].bytes" 2>/dev/null) || fb=
 	fr=$(mval "files[$nf].role" 2>/dev/null) || fr=
 	keys=$(mkeys "files[$nf]" 2>/dev/null) || keys=
-	msg=$(order_ok "$keys" "path,sha256,bytes,role") || refuse "manifest: files[$nf] keys are not in the prescribed order: $msg (§5.1.2 EV-23)"
+	msg=$(order_ok "$keys" "path,sha256,bytes,role") || refuse "manifest: files[$nf] keys are not in the prescribed order: $msg (§5.1.2 MA-23)"
 	count_ignored "files[$nf]" "$keys" "path sha256 bytes role"
 	nf=$((nf + 1))
 
 	case $fp in
 	'' | /* | .. | ../* | */.. | */../* | ./* | */./* | .)
-		refuse "manifest: files[$nf-1] path '$fp' is not a safe relative path (§4.4 EV-19)"
+		refuse "manifest: files[$nf-1] path '$fp' is not a safe relative path (§4.4 MA-19)"
 		continue ;;
 	esac
-	hex64 "${fs:-}" || refuse "manifest: files[$nf-1] ($fp) sha256 is not 64 lowercase hex (§4.4 EV-19)"
-	uint "${fb:-}" || refuse "manifest: files[$nf-1] ($fp) bytes is not a decimal count (§4.4 EV-19)"
+	hex64 "${fs:-}" || refuse "manifest: files[$nf-1] ($fp) sha256 is not 64 lowercase hex (§4.4 MA-19)"
+	uint "${fb:-}" || refuse "manifest: files[$nf-1] ($fp) bytes is not a decimal count (§4.4 MA-19)"
 	if [ -s "$tmp/listed" ] && grep -qxF "$fp" "$tmp/listed"; then
-		refuse "manifest: file '$fp' appears more than once in files[] — every file appears exactly once (§4.4 EV-19)"
+		refuse "manifest: file '$fp' appears more than once in files[] — every file appears exactly once (§4.4 MA-19)"
 		continue
 	fi
 	printf '%s\n' "$fp" >>"$tmp/listed"
 	[ "$fr" = "records" ] && nrec_files=$((nrec_files + 1))
 
-	if [ ! -f "$PKG/$fp" ]; then
-		refuse "files: '$fp' is listed in the manifest but absent from the package (§4.4 EV-19)"
+	# §4.4 MA-82: a package file is a regular file. A symlink's bytes are its
+	# target's bytes, and the target can be replaced or re-pointed after the
+	# manifest is written without any listed byte moving, so a listed link is
+	# refused whether or not its digest matches.
+	if [ -L "$PKG/$fp" ]; then
+		refuse "files: '$fp' is a symbolic link — a package file must be a regular file inside the package, and a link's target can be replaced without changing a listed byte (§4.4 MA-82)"
 		continue
 	fi
-	[ -r "$PKG/$fp" ] || { refuse "files: '$fp' is unreadable — a read error is not an absence (§4.4 EV-19)"; continue; }
+	if [ ! -f "$PKG/$fp" ]; then
+		refuse "files: '$fp' is listed in the manifest but absent from the package (§4.4 MA-19)"
+		continue
+	fi
+	[ -r "$PKG/$fp" ] || { refuse "files: '$fp' is unreadable — a read error is not an absence (§4.4 MA-19)"; continue; }
 	real_bytes=$(wc -c <"$PKG/$fp" | tr -d ' ')
 	real_sha=$(sha256sum "$PKG/$fp" | cut -c1-64)
 	if [ "$real_sha" != "$fs" ]; then
-		refuse "files: '$fp' sha256 is $real_sha, manifest says $fs (§4.4 EV-19)"
+		refuse "files: '$fp' sha256 is $real_sha, manifest says $fs (§4.4 MA-19)"
 	fi
 	if [ "$real_bytes" != "$fb" ]; then
-		refuse "files: '$fp' is $real_bytes bytes, manifest says $fb (§4.4 EV-19)"
+		refuse "files: '$fp' is $real_bytes bytes, manifest says $fb (§4.4 MA-19)"
 	fi
 	printf '  %-4s %-28s %s  %s bytes  role=%s\n' \
 		"$([ "$real_sha" = "$fs" ] && [ "$real_bytes" = "$fb" ] && echo OK || echo FAIL)" \
 		"$fp" "$real_sha" "$real_bytes" "$fr" >>"$tmp/files.report"
 done
-[ "$nrec_files" -gt 0 ] || refuse "package: no file carries role 'records' — a package needs at least one record stream file (§4.2 EV-17)"
+[ "$nrec_files" -gt 0 ] || refuse "package: no file carries role 'records' — a package needs at least one record stream file (§4.2 MA-17)"
 
-# unlisted files (EV-19)
-(cd "$PKG" && find . -type f -print | sed 's|^\./||' | grep -v '^package\.json$' | sort) >"$tmp/actual"
+# unlisted files (MA-19)
+# every entry that is a file or a symlink: '-type f' alone never enumerated a
+# symlink, so an unlisted link into the rest of the filesystem passed (§4.4 MA-82)
+(cd "$PKG" && find . \( -type f -o -type l \) -print | sed 's|^\./||' | grep -v '^package\.json$' | sort) >"$tmp/actual"
 sort "$tmp/listed" >"$tmp/listed.sorted"
 while IFS= read -r extra; do
 	[ -n "$extra" ] || continue
 	if ! grep -qxF "$extra" "$tmp/listed.sorted"; then
-		refuse "files: '$extra' is in the package but not listed in the manifest (§4.4 EV-19)"
+		refuse "files: '$extra' is in the package but not listed in the manifest (§4.4 MA-19)"
 	fi
 done <"$tmp/actual"
 
-# counts (EV-31)
+# counts (MA-31)
 cf=$(mval counts.files 2>/dev/null) || cf=
 cr=$(mval counts.records 2>/dev/null) || cr=
 cs=$(mval counts.streams 2>/dev/null) || cs=
-[ "${cf:-x}" = "$NFILES" ] || refuse "manifest: counts.files=${cf:-<absent>} but files[] holds $NFILES entries (§5.2.9 EV-31)"
+[ "${cf:-x}" = "$NFILES" ] || refuse "manifest: counts.files=${cf:-<absent>} but files[] holds $NFILES entries (§5.2.9 MA-31)"
 
-# bound (EV-32)
+# bound (MA-32)
 nb=$(mcount bound 2>/dev/null) || nb=0
-[ "$nb" -gt 0 ] || refuse "manifest: bound[] is absent or empty — a producer with nothing to state writes the residual (§5.2.10 EV-32)"
+[ "$nb" -gt 0 ] || refuse "manifest: bound[] is absent or empty — a producer with nothing to state writes the residual (§5.2.10 MA-32)"
 
 # ── §8 scope ──────────────────────────────────────────────────────────────
 NC=$(mcount scope.contains 2>/dev/null) || NC=0
-[ "$NC" -gt 0 ] || refuse "scope: contains[] is absent or empty (§8.2 EV-55)"
+[ "$NC" -gt 0 ] || refuse "scope: contains[] is absent or empty (§8.2 MA-55)"
 i=0
 {
 	echo "scope"
 	echo "  contains:"
 	while [ "$i" -lt "$NC" ]; do
 		v=$(mval "scope.contains[$i]" 2>/dev/null) || v=
-		[ -n "$v" ] || refuse "scope: contains[$i] is empty (§8.2 EV-55)"
+		[ -n "$v" ] || refuse "scope: contains[$i] is empty (§8.2 MA-55)"
 		printf '    - %s\n' "$v"
 		i=$((i + 1))
 	done
 	echo "  not_contains:"
 } >"$tmp/scope.report"
 mcount scope.not_contains >/dev/null 2>&1 ||
-	refuse "scope: not_contains is absent — an absence that is not stated reads as completeness (§8.1 EV-54)"
+	refuse "scope: not_contains is absent — an absence that is not stated reads as completeness (§8.1 MA-54)"
 NN=$(mcount scope.not_contains 2>/dev/null) || NN=0
 i=0
 while [ "$i" -lt "$NN" ]; do
@@ -669,14 +692,14 @@ while [ "$i" -lt "$NN" ]; do
 	mn=$(mval "scope.not_contains[$i].meaning" 2>/dev/null) || mn=
 	wy=$(mval "scope.not_contains[$i].why" 2>/dev/null) || wy=
 	keys=$(mkeys "scope.not_contains[$i]" 2>/dev/null) || keys=
-	msg=$(order_ok "$keys" "thing,meaning,why") || refuse "scope: not_contains[$i] keys are not in the prescribed order: $msg (§5.1.2 EV-23)"
+	msg=$(order_ok "$keys" "thing,meaning,why") || refuse "scope: not_contains[$i] keys are not in the prescribed order: $msg (§5.1.2 MA-23)"
 	count_ignored "scope.not_contains[$i]" "$keys" "thing meaning why"
 	case $mn in
 	not-recorded | none-this-scope | unreadable | ABSENT | UNKNOWN) ;;
-	*) refuse "scope: not_contains[$i] meaning '${mn:-<absent>}' is outside the vocabulary of §8.3 — a scope statement that cannot be parsed is worse than none (§8.3 EV-57)" ;;
+	*) refuse "scope: not_contains[$i] meaning '${mn:-<absent>}' is outside the vocabulary of §8.3 — a scope statement that cannot be parsed is worse than none (§8.3 MA-57)" ;;
 	esac
-	[ -n "$th" ] || refuse "scope: not_contains[$i].thing is empty (§8.2 EV-55)"
-	[ -n "$wy" ] || refuse "scope: not_contains[$i].why is empty (§8.2 EV-55)"
+	[ -n "$th" ] || refuse "scope: not_contains[$i].thing is empty (§8.2 MA-55)"
+	[ -n "$wy" ] || refuse "scope: not_contains[$i].why is empty (§8.2 MA-55)"
 	printf '    - %s [%s] %s\n' "${th:-?}" "${mn:-?}" "${wy:-}" >>"$tmp/scope.report"
 	i=$((i + 1))
 done
@@ -700,19 +723,19 @@ while IFS= read -r fpath; do
 	fi=$((fi + 1))
 	fbytes=$(wc -c <"$PKG/$fpath" | tr -d ' ')
 	if [ "$fbytes" -eq 0 ]; then
-		refuse "payload: '$fpath' is empty — line 1 must be the stream manifest (§6.4 EV-37)"
+		refuse "payload: '$fpath' is empty — line 1 must be the stream manifest (§6.4 MA-37)"
 		continue
 	fi
-	# §5.1.3 EV-24 applies to a record stream file, not only to the manifest:
+	# §5.1.3 MA-24 applies to a record stream file, not only to the manifest:
 	# a NUL byte cannot be carried, and silently truncating it would edit the
 	# record. A raw control byte is refused rather than escaped on the way in.
 	pctl=$(LC_ALL=C tr -d '\040-\176\200-\377\012' <"$PKG/$fpath" | wc -c | tr -d ' ')
 	if [ "$pctl" -gt 0 ]; then
-		refuse "payload: '$fpath' contains $pctl NUL or raw control byte(s) — a control byte cannot be carried in a record stream file (§5.1.3 EV-24)"
+		refuse "payload: '$fpath' contains $pctl NUL or raw control byte(s) — a control byte cannot be carried in a record stream file (§5.1.3 MA-24)"
 	fi
 	head -n 1 "$PKG/$fpath" >"$tmp/p.$fi.line"
 	if ! awk -f "$tmp/tok.awk" <"$tmp/p.$fi.line" >"$tmp/p.$fi.flat" 2>/dev/null; then
-		refuse "payload: '$fpath' line 1 is not a JSON object — a stream manifest must be there (§6.4 EV-37)"
+		refuse "payload: '$fpath' line 1 is not a JSON object — a stream manifest must be there (§6.4 MA-37)"
 		continue
 	fi
 	pv=$(awk -F"$SEP" -v p="v" '$1 == "V" && $2 == p { print $4; exit }' "$tmp/p.$fi.flat")
@@ -721,16 +744,16 @@ while IFS= read -r fpath; do
 	count_ignored "'$fpath' line 1" "$pkeys" "contract v kind streams"
 	first2=$(printf '%s' "$pkeys" | cut -d, -f1-2)
 	if [ "$first2" != "contract,v" ]; then
-		refuse "payload: '$fpath' line 1 does not begin with the keys contract,v (found '${first2:-<none>}') (§6.4 EV-37)"
+		refuse "payload: '$fpath' line 1 does not begin with the keys contract,v (found '${first2:-<none>}') (§6.4 MA-37)"
 	fi
-	[ -n "$pk" ] || refuse "payload: '$fpath' line 1 does not name a contract (§6.4 EV-37)"
+	[ -n "$pk" ] || refuse "payload: '$fpath' line 1 does not name a contract (§6.4 MA-37)"
 	if ! uint "${pv:-x}"; then
-		refuse "payload: '$fpath' line 1 v is not an integer (§6.4 EV-37)"
+		refuse "payload: '$fpath' line 1 v is not an integer (§6.4 MA-37)"
 	fi
 
 	# the records
 	awk -v tmp="$tmp" -v fi="$fi" -f "$tmp/rec.awk" <"$PKG/$fpath" >"$tmp/r.$fi"
-	# line 1 is the stream manifest, not a record (§6.5 EV-38)
+	# line 1 is the stream manifest, not a record (§6.5 MA-38)
 	nlines=$(awk 'END { print NR }' "$PKG/$fpath")
 	nrec=$((nlines - 1))
 	[ "$nrec" -ge 0 ] || nrec=0
@@ -738,13 +761,15 @@ while IFS= read -r fpath; do
 
 	# a torn final line: the file must end with a newline unless it is empty
 	if [ -n "$(tail -c 1 "$PKG/$fpath")" ]; then
-		refuse "payload: '$fpath' does not end with a newline — a final line without one is a torn line, and a torn line is a refusal (§6.3 EV-36)"
+		refuse "payload: '$fpath' does not end with a newline — a final line without one is a torn line, and a torn line is a refusal (§6.3 MA-36)"
 	fi
 
 	# per-record refusals
+	pbad=0
 	while IFS=$SEP read -r tag f ln diag; do
 		[ "$tag" = "E" ] || continue
-		refuse "payload: $fpath line $ln: $diag (§6.3 EV-36)"
+		pbad=1
+		refuse "payload: $fpath line $ln: $diag (§6.3 MA-36)"
 	done <"$tmp/r.$fi"
 
 	# per-record semantic checks
@@ -752,33 +777,38 @@ while IFS= read -r fpath; do
 		[ "$tag" = "R" ] || continue
 		case $mk in
 		MEASURED | DERIVED | ABSENT | UNKNOWN) ;;
-		*) refuse "payload: $fpath line $ln: mark '$mk' is outside the vocabulary of §6.2 (§6.2 EV-35)" ;;
+		*) refuse "payload: $fpath line $ln: mark '$mk' is outside the vocabulary of §6.2 (§6.2 MA-35)" ;;
 		esac
 		printf '%s' "$st" | grep -Eq '^[A-Za-z][A-Za-z0-9_.-]*$' ||
-			refuse "payload: $fpath line $ln: stream name '$st' is not ^[A-Za-z][A-Za-z0-9_.-]*$ (§6.2 EV-35)"
+			refuse "payload: $fpath line $ln: stream name '$st' is not ^[A-Za-z][A-Za-z0-9_.-]*$ (§6.2 MA-35)"
 		printf '%s' "$w" | grep -Eq '^[A-Za-z][A-Za-z0-9_.|/-]*$' ||
-			refuse "payload: $fpath line $ln: writer '$w' is not ^[A-Za-z][A-Za-z0-9_.|/-]*$ (§6.2 EV-35)"
+			refuse "payload: $fpath line $ln: writer '$w' is not ^[A-Za-z][A-Za-z0-9_.|/-]*$ (§6.2 MA-35)"
 		case $ts in
 		0 | 0.0*)
-			refuse "payload: $fpath line $ln: ts is 0 — an absent timestamp is not the epoch; write null instead (§6.2, §5.2.4 EV-28)" ;;
+			refuse "payload: $fpath line $ln: ts is 0 — an absent timestamp is not the epoch; write null instead (§6.2, §5.2.4 MA-28)" ;;
 		esac
-		[ "$id" = "$st:$sq" ] || refuse "payload: $fpath line $ln: id '$id' is not '<stream>:<seq>' (§6.2 EV-35)"
-		hex64 "$sha" || refuse "payload: $fpath line $ln: body_sha is not 64 lowercase hex (§6.2 EV-35)"
+		[ "$id" = "$st:$sq" ] || refuse "payload: $fpath line $ln: id '$id' is not '<stream>:<seq>' (§6.2 MA-35)"
+		# at payload contract v1 the two envelope keys carry the same value; they are
+		# separate keys only so a later version can carry several kinds on one chain
+		if [ "$v" = 1 ] && [ "$k" != "$st" ]; then
+			refuse "payload: $fpath line $ln: kind '$k' and stream '$st' differ — at payload contract v1 they are equal (§6.2 MA-35)"
+		fi
+		hex64 "$sha" || refuse "payload: $fpath line $ln: body_sha is not 64 lowercase hex (§6.2 MA-35)"
 		if [ "$prev" != "null" ]; then
-			hex64 "$prev" || refuse "payload: $fpath line $ln: prev is neither null nor 64 lowercase hex (§6.2 EV-35)"
+			hex64 "$prev" || refuse "payload: $fpath line $ln: prev is neither null nor 64 lowercase hex (§6.2 MA-35)"
 		fi
 		if [ "$v" != "$pv" ]; then
-			refuse "payload: $fpath line $ln: record v=$v but the stream manifest says v=$pv (§6.4 EV-37)"
+			refuse "payload: $fpath line $ln: record v=$v but the stream manifest says v=$pv (§6.4 MA-37)"
 		fi
-		# layer 0: re-derive the body digest from the bytes received (§7.1 EV-41)
+		# layer 0: re-derive the body digest from the bytes received (§7.1 MA-41)
 		if [ -f "$tmp/b.$fi.$ln" ]; then
 			got=$(sha256sum "$tmp/b.$fi.$ln" | cut -c1-64)
-			[ "$got" = "$sha" ] || refuse "payload: $fpath line $ln: body_sha is $sha but the body bytes hash to $got (§7.1 EV-41)"
+			[ "$got" = "$sha" ] || refuse "payload: $fpath line $ln: body_sha is $sha but the body bytes hash to $got (§7.1 MA-41)"
 		fi
 		printf '%s\n' "$st" >>"$tmp/streams.list"
 	done <"$tmp/r.$fi"
 
-	# layer 1: per-stream continuity (§7.2 EV-43/EV-44)
+	# layer 1: per-stream continuity (§7.2 MA-43/MA-44)
 	for sf in "$tmp/s.$fi".*; do
 		[ -f "$sf" ] || continue
 		sname=${sf##*/s."$fi".}
@@ -801,19 +831,19 @@ while IFS= read -r fpath; do
 		shead=${rest%%|*}
 		sdetail=${rest#*|}
 		[ "$sok" = "OK" ] || refuse "payload: $fpath stream '$sname': $sdetail"
-		# stream manifest agreement (§6.4 EV-37, §7.2.1 EV-43)
+		# stream manifest agreement (§6.4 MA-37, §7.2.1 MA-43)
 		mn=$(awk -F"$SEP" -v p="streams.$sname.n" '$1 == "V" && $2 == p { print $4; exit }' "$tmp/p.$fi.flat")
 		mh=$(awk -F"$SEP" -v p="streams.$sname.head" '$1 == "V" && $2 == p { print $4; exit }' "$tmp/p.$fi.flat")
 		if [ -z "$mn" ]; then
-			refuse "payload: $fpath declares stream '$sname' in its records but not in its stream manifest (§6.4 EV-37)"
+			refuse "payload: $fpath declares stream '$sname' in its records but not in its stream manifest (§6.4 MA-37)"
 		elif [ "$mn" != "$sn" ]; then
-			refuse "payload: $fpath stream '$sname': the manifest says n=$mn, the payload holds $sn records (§7.2.1 EV-43)"
+			refuse "payload: $fpath stream '$sname': the manifest says n=$mn, the payload holds $sn records (§7.2.1 MA-43)"
 		fi
 		if [ "$mh" != "$shead" ]; then
-			refuse "payload: $fpath stream '$sname': the manifest head is '${mh:-<absent>}', the payload's last body_sha is '$shead' (§7.2.1 EV-43)"
+			refuse "payload: $fpath stream '$sname': the manifest head is '${mh:-<absent>}', the payload's last body_sha is '$shead' (§7.2.1 MA-43)"
 		fi
 		printf '  %-20s %-16s %-5s %-14s %s\n' "$fpath" "$sname" "$sn" "$(printf '%s' "$shead" | cut -c1-12)" "$sok" >>"$tmp/table"
-		# findings: a writer's timestamps should not go backwards (§7.2.4 EV-46)
+		# findings: a writer's timestamps should not go backwards (§7.2.4 MA-46)
 		awk -F"$SEP" -v name="$sname" -v file="$fpath" '
 			$5 != "null" {
 				w = $6
@@ -823,6 +853,31 @@ while IFS= read -r fpath; do
 			}
 		' "$sf" >>"$tmp/ts.findings"
 	done
+
+	# §6.4 MA-37 / §7.2.1 MA-43: the stream manifest of THIS file must declare the
+	# streams this file's records are on, with the count and head they have. The
+	# loop above iterates the streams the RECORDS derive, so a declared stream with
+	# no records at all was never looked at: line 1 could declare a stream with
+	# n=5 and a head and pass. An empty stream is declared n:0, head:null (§6.4).
+	awk -F"$SEP" -v p="streams" '$1 == "O" && $2 == p { print $3; exit }' "$tmp/p.$fi.flat" |
+		tr ',' '\n' | grep -v '^$' >"$tmp/d.$fi"
+	while IFS= read -r dname; do
+		printf '%s\n' "$dname" >>"$tmp/declared.list"
+		[ -f "$tmp/s.$fi.$dname" ] && continue
+		# a stream whose records were not grouped because the name is outside the
+		# charset has records; the charset refusal is the one that names the defect
+		if [ -f "$tmp/raw.$fi" ] && grep -qxF "$dname" "$tmp/raw.$fi"; then
+			continue
+		fi
+		# a line that did not parse is a record this reader could not place, so
+		# "this file holds no record on that stream" is not a statement it can make
+		[ "$pbad" -eq 0 ] || continue
+		dn=$(awk -F"$SEP" -v p="streams.$dname.n" '$1 == "V" && $2 == p { print $4; exit }' "$tmp/p.$fi.flat")
+		dh=$(awk -F"$SEP" -v p="streams.$dname.head" '$1 == "V" && $2 == p { print $4; exit }' "$tmp/p.$fi.flat")
+		if [ "${dn:-0}" != 0 ] || { [ -n "$dh" ] && [ "$dh" != "null" ]; }; then
+			refuse "payload: $fpath declares stream '$dname' with n=${dn:-<absent>}, head=${dh:-<absent>}, but the payload holds no record on it — a declared stream must be the stream the records are on (§6.4 MA-37, §7.2.1 MA-43)"
+		fi
+	done <"$tmp/d.$fi"
 done <"$tmp/recfiles"
 
 while IFS= read -r line; do
@@ -830,7 +885,7 @@ while IFS= read -r line; do
 done <"$tmp/ts.findings" >>"$tmp/findings"
 
 # the seam rule: two files must never be read as one stream, and a
-# disagreement between them is a finding, never resolved by choosing one (§6.7 EV-40)
+# disagreement between them is a finding, never resolved by choosing one (§6.7 MA-40)
 for sname in $(sort -u "$tmp/streams.list"); do
 	set -- "$tmp"/s.*."$sname"
 	[ $# -gt 1 ] || continue
@@ -843,37 +898,37 @@ for sname in $(sort -u "$tmp/streams.list"); do
 		ln=$(awk -F"$SEP" 'NR == FNR { x[FNR] = $2; next } { if ($2 != x[FNR]) { print FNR; exit } }' "$first" "$other")
 		fa=${first##*/s.}; fa=${fa%%.*}
 		fb=${other##*/s.}; fb=${fb%%.*}
-		finding "  two record stream files disagree about stream '$sname' at seq ${ln:-?}: $(sed -n "${fa}p" "$tmp/recfiles") and $(sed -n "${fb}p" "$tmp/recfiles") — they are NOT merged, and neither is preferred (§6.7 EV-40)"
+		finding "  two record stream files disagree about stream '$sname' at seq ${ln:-?}: $(sed -n "${fa}p" "$tmp/recfiles") and $(sed -n "${fb}p" "$tmp/recfiles") — they are NOT merged, and neither is preferred (§6.7 MA-40)"
 	done
 done
 
-# counts.records / counts.streams (§5.2.9 EV-31)
-[ "${cr:-x}" = "$total_records" ] || refuse "manifest: counts.records=${cr:-<absent>} but the payload holds $total_records record(s) (§5.2.9 EV-31)"
-nstreams=$(sort -u "$tmp/streams.list" | grep -c .)
-[ "${cs:-x}" = "$nstreams" ] || refuse "manifest: counts.streams=${cs:-<absent>} but the payload declares $nstreams stream(s) (§5.2.9 EV-31)"
+# counts.records / counts.streams (§5.2.9 MA-31)
+[ "${cr:-x}" = "$total_records" ] || refuse "manifest: counts.records=${cr:-<absent>} but the payload holds $total_records record(s) (§5.2.9 MA-31)"
+nstreams=$(sort -u "$tmp/declared.list" | grep -c .)
+[ "${cs:-x}" = "$nstreams" ] || refuse "manifest: counts.streams=${cs:-<absent>} but the payload declares $nstreams stream(s) (§5.2.9 MA-31)"
 
 # ── §9 anchor ─────────────────────────────────────────────────────────────
 : >"$tmp/anchor.report"
 case $ANCH in
 false)
 	echo "  NOT ANCHORED — this package's digest is held by no one but its producer" >>"$tmp/anchor.report"
-	[ "$APROF" = "null" ] || refuse "anchor: anchored=false but profile is '${APROF}' — an unanchored package must say so plainly (§9.2 EV-63)"
-	[ "$ABINDS" = "null" ] || refuse "anchor: anchored=false but binds is '${ABINDS}' (§9.2 EV-63)"
-	[ "$ACLAIM" = "null" ] || refuse "anchor: anchored=false but claim is not null — an unanchored package carries no claim at all (§9.2 EV-63)"
+	[ "$APROF" = "null" ] || refuse "anchor: anchored=false but profile is '${APROF}' — an unanchored package must say so plainly (§9.2 MA-63)"
+	[ "$ABINDS" = "null" ] || refuse "anchor: anchored=false but binds is '${ABINDS}' (§9.2 MA-63)"
+	[ "$ACLAIM" = "null" ] || refuse "anchor: anchored=false but claim is not null — an unanchored package carries no claim at all (§9.2 MA-63)"
 	if [ -n "$AEV" ]; then
 		finding "  anchor evidence was supplied but the package claims no anchor: the evidence is unused, and the package remains unanchored"
 	fi
 	;;
 true)
 	anchor_head="  CLAIMED — profile '${APROF:-<absent>}', binds '${ABINDS:-<absent>}'"
-	[ "$ABINDS" = "manifest-digest" ] || refuse "anchor: binds is '${ABINDS:-<absent>}', must be 'manifest-digest' (§9.2 EV-63)"
+	[ "$ABINDS" = "manifest-digest" ] || refuse "anchor: binds is '${ABINDS:-<absent>}', must be 'manifest-digest' (§9.2 MA-63)"
 	mkeys anchor.claim >/dev/null 2>&1 ||
-		refuse "anchor: anchored=true but claim is not an object in the profile's schema (§9.2 EV-63)"
+		refuse "anchor: anchored=true but claim is not an object in the profile's schema (§9.2 MA-63)"
 
 	# S8: what §9.1a forbids is a DIGEST in a claim, not a field called 'held'.
 	# The self-digest case is impossible by construction — a manifest cannot
 	# contain its own digest — so any 64-hex claim value is either a digest that
-	# has moved or a claim about one the verifier must obtain itself (§9.1a EV-62).
+	# has moved or a claim about one the verifier must obtain itself (§9.1a MA-62).
 	awk -F"$SEP" -v sep="$SEP" '$1 == "V" && $2 ~ /^anchor\.claim(\.|$)/ { print $2 sep $4 }' \
 		"$tmp/m.flat" >"$tmp/claim.vals"
 	while IFS=$SEP read -r cpath cval; do
@@ -882,17 +937,17 @@ true)
 		*[!0-9a-fA-F]*) continue ;;
 		esac
 		[ ${#cval} -eq 64 ] || continue
-		refuse "anchor: claim field '${cpath#anchor.claim.}' carries a bare 64-hex digest — a manifest cannot hold its own digest, so a claim carries only what a verifier needs in order to obtain the evidence (§9.1a EV-62)"
+		refuse "anchor: claim field '${cpath#anchor.claim.}' carries a bare 64-hex digest — a manifest cannot hold its own digest, so a claim carries only what a verifier needs in order to obtain the evidence (§9.1a MA-62)"
 	done <"$tmp/claim.vals"
 	case $APROF in
 	p1-second-party-digest)
 		holder=$(mval anchor.claim.holder 2>/dev/null) || holder=
 		mkeys anchor.claim >/dev/null 2>&1 ||
-			refuse "anchor: profile p1 requires a claim object (§9.3 EV-64)"
-		[ -n "$holder" ] || refuse "anchor: profile p1 claim names no holder (§9.3 EV-64)"
+			refuse "anchor: profile p1 requires a claim object (§9.3 MA-64)"
+		[ -n "$holder" ] || refuse "anchor: profile p1 claim names no holder (§9.3 MA-64)"
 		echo "  claim: holder '${holder}', channel '$(mval anchor.claim.channel 2>/dev/null)'" >>"$tmp/anchor.report"
 		if [ -z "$AEV" ]; then
-			cannot_decide "  anchor: profile p1 is claimed but --anchor-evidence was not supplied — the holder's digest is the input this check needs (§10.3 EV-70)"
+			cannot_decide "  anchor: profile p1 is claimed but --anchor-evidence was not supplied — the holder's digest is the input this check needs (§10.3 MA-70)"
 		else
 			if [ -f "$AEV" ]; then
 				ev=$(LC_ALL=C tr -c '0-9a-fA-F' '\n' <"$AEV" | grep -E '^[0-9a-fA-F]{64}$' | head -1 | tr 'A-F' 'a-f')
@@ -903,38 +958,54 @@ true)
 				cannot_decide "  anchor: profile p1 was given evidence that holds no 64-hex digest — the validator cannot read the holder's statement (§10.3)"
 			elif [ "$ev" = "$pkd" ]; then
 				anchor_head="  ANCHORED — profile '${APROF:-<absent>}', binds '${ABINDS:-<absent>}'"
-				echo "  evidence: the holder's digest equals this package's digest — VERIFIED (§9.3 EV-64)" >>"$tmp/anchor.report"
+				echo "  evidence: the holder's digest equals this package's digest — VERIFIED (§9.3 MA-64)" >>"$tmp/anchor.report"
 			else
-				refuse "anchor: profile p1 is claimed but the evidence does not match: the holder says '${ev}', the package digest is '$pkd' (§9.1(e) EV-61)"
+				refuse "anchor: profile p1 is claimed but the evidence does not match: the holder says '${ev}', the package digest is '$pkd' (§9.1(e) MA-61)"
 			fi
 		fi
 		;;
 	p2-append-only-log)
 		lg=$(mval anchor.claim.log 2>/dev/null) || lg=
-		[ -n "$lg" ] || refuse "anchor: profile p2 claim must name the log (§9.3 EV-64)"
+		[ -n "$lg" ] || refuse "anchor: profile p2 claim must name the log (§9.3 MA-64)"
 		echo "  claim: log '${lg}', inclusion '$(mval anchor.claim.inclusion 2>/dev/null)'" >>"$tmp/anchor.report"
 		if [ -z "$AEV" ]; then
-			cannot_decide "  anchor: profile p2 is claimed but no --anchor-evidence was supplied (§10.3 EV-70)"
+			cannot_decide "  anchor: profile p2 is claimed but no --anchor-evidence was supplied (§10.3 MA-70)"
 		else
-			cannot_decide "  anchor: profile p2 digest evidence was supplied, but inclusion in the log cannot be re-checked by this validator — it needs the log itself (§10.3 EV-70)"
+			# §9.3: the base validator can compare a digest the log states to the
+			# package digest. Inclusion cannot be re-checked without the log itself,
+			# so a MATCH still cannot decide — but a mismatch is a contradiction,
+			# and contradicted evidence is a refusal (§10.3 MA-70, §10.2 MA-69).
+			if [ -f "$AEV" ]; then
+				ev=$(LC_ALL=C tr -c '0-9a-fA-F' '\n' <"$AEV" | grep -E '^[0-9a-fA-F]{64}$' | head -1 | tr 'A-F' 'a-f')
+			else
+				ev=$(printf '%s' "$AEV" | tr 'A-F' 'a-f')
+			fi
+			if ! hex64 "${ev:-}"; then
+				cannot_decide "  anchor: profile p2 was given evidence that holds no 64-hex digest — the validator cannot read the log's statement (§10.3)"
+			elif [ "$ev" != "$pkd" ]; then
+				refuse "anchor: profile p2 is claimed but the evidence does not match: the log states '${ev}', the package digest is '$pkd' (§9.1(e) MA-61, §10.3 MA-70)"
+			else
+				echo "  evidence: the log's digest equals this package's digest (§9.3 MA-64)" >>"$tmp/anchor.report"
+				cannot_decide "  anchor: profile p2 digest evidence matches this package, but inclusion in the log cannot be re-checked by this validator — it needs the log itself (§10.3 MA-70)"
+			fi
 		fi
 		;;
 	p3-eidas-qualified-seal-asic-e)
 		sealer=$(mval anchor.claim.sealer 2>/dev/null) || sealer=
-		[ -n "$sealer" ] || refuse "anchor: profile p3 claim names no sealer (§9.3 EV-64)"
+		[ -n "$sealer" ] || refuse "anchor: profile p3 claim names no sealer (§9.3 MA-64)"
 		echo "  claim: sealer '${sealer}'" >>"$tmp/anchor.report"
-		cannot_decide "  anchor: profile p3 requires a signature verifier and trust anchors; this validator has no signature verification and cannot decide the seal (§9.3 EV-64, §10.3 EV-70)"
+		cannot_decide "  anchor: profile p3 requires a signature verifier and trust anchors; this validator has no signature verification and cannot decide the seal (§9.3 MA-64, §10.3 MA-70)"
 		;;
 	'' | null)
-		refuse "anchor: anchored=true but no profile is named (§9.2 EV-63)"
+		refuse "anchor: anchored=true but no profile is named (§9.2 MA-63)"
 		;;
 	*)
-		refuse "anchor: profile '${APROF}' is unknown to this validator — an unknown profile is an unverifiable claim and is refused, not ignored (§9.4 EV-65)"
+		refuse "anchor: profile '${APROF}' is unknown to this validator — an unknown profile is an unverifiable claim and is refused, not ignored (§9.4 MA-65)"
 		;;
 	esac
 	;;
 *)
-	refuse "manifest: anchor.anchored is '${ANCH:-<absent>}', must be true or false (§9.2 EV-63)"
+	refuse "manifest: anchor.anchored is '${ANCH:-<absent>}', must be true or false (§9.2 MA-63)"
 	;;
 esac
 
@@ -948,16 +1019,16 @@ if [ -n "$PREV" ]; then
 	fi
 	pvd=$(sha256sum "$PREV/package.json" | cut -c1-64)
 	if [ "$PSHA" = "null" ]; then
-		refuse "chain: prev.how=none (this package claims no predecessor) but --prev-package was supplied — the package contradicts the package the verifier holds (§7.4.2 EV-50)"
+		refuse "chain: prev.how=none (this package claims no predecessor) but --prev-package was supplied — the package contradicts the package the verifier holds (§7.4.2 MA-50)"
 	elif [ "$PSHA" != "$pvd" ]; then
-		refuse "chain: prev.package_sha is '$PSHA' but the supplied previous package's digest is '$pvd' — the chain does not link (§7.4.2 EV-50)"
+		refuse "chain: prev.package_sha is '$PSHA' but the supplied previous package's digest is '$pvd' — the chain does not link (§7.4.2 MA-50)"
 	else
 		# every stream of the predecessor must be a prefix of this package's.
 		# The predecessor's record stream files are enumerated from its OWN
 		# manifest, not from a top-level glob: a package may put a records file
-		# at any path (§4.2 EV-17), and a glob silently misses one that is a
+		# at any path (§4.2 MA-17), and a glob silently misses one that is a
 		# directory down — which made an omitted stream look absent rather than
-		# dropped (§7.4.2 EV-50).
+		# dropped (§7.4.2 MA-50).
 		if ! awk -f "$tmp/tok.awk" <"$PREV/package.json" >"$tmp/prevm.flat" 2>/dev/null; then
 			printf '%s: --prev-package %s/package.json is not parseable as JSON (exit 2)\n' "$PROG" "$PREV" >&2
 			residual_err
@@ -981,7 +1052,7 @@ if [ -n "$PREV" ]; then
 		done
 		if [ "$pfi" -eq 0 ]; then
 			CHAIN_STATE=undecided
-			cannot_decide "  chain: --prev-package was supplied but its manifest lists no record stream file — there is no stream to compare this package against (§10.3 EV-70)"
+			cannot_decide "  chain: --prev-package was supplied but its manifest lists no record stream file — there is no stream to compare this package against (§10.3 MA-70)"
 		fi
 		for psf in "$tmp"/s.pv*.*; do
 			[ -f "$psf" ] || continue
@@ -998,9 +1069,9 @@ if [ -n "$PREV" ]; then
 			done
 			cur=$(head -n "$pn" "$tmp/cur.list")
 			if [ "$cur" != "$pri" ]; then
-				refuse "chain: stream '$pname' is not a prefix of the same stream in the supplied previous package — records were dropped, re-ordered or rewritten across packages (§7.4.2 EV-50)"
+				refuse "chain: stream '$pname' is not a prefix of the same stream in the supplied previous package — records were dropped, re-ordered or rewritten across packages (§7.4.2 MA-50)"
 			fi
-			grep -qxF "$ph" "$tmp/cur.list" || refuse "chain: the previous package's head of stream '$pname' ($ph) is not present in this package (§7.4.2 EV-50)"
+			grep -qxF "$ph" "$tmp/cur.list" || refuse "chain: the previous package's head of stream '$pname' ($ph) is not present in this package (§7.4.2 MA-50)"
 		done
 	fi
 fi

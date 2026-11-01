@@ -4,8 +4,8 @@ what:   subject.id is a filesystem path. §5.2.3 requires a CONTENT identity and
         machine or a file invites reading the package as a record about a person.
         A validator cannot tell a digest from a name, so it refuses the shapes it
         can see — a path segment or a bare . — and edition 0.1 says so in §5.2.3
-run:    sh validator/evp-verify vectors/19-subject-path/pkg
+run:    sh validator/martelage-verify vectors/19-subject-path/pkg
 exit:   1
 must print:
   - "subject.id '/etc/passwd' is shaped like a filesystem path"
-requirements exercised: EV-27
+requirements exercised: MA-27

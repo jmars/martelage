@@ -1,7 +1,7 @@
 vector: 06-payload-digest-mismatch
 what:   the manifest's files[0].sha256 does not match the bytes on disk
-run:    sh validator/evp-verify vectors/06-payload-digest-mismatch/pkg
+run:    sh validator/martelage-verify vectors/06-payload-digest-mismatch/pkg
 exit:   1
 must print:
   - "files: 'records.jsonl' sha256 is ..."
-requirements exercised: EV-19, EV-48
+requirements exercised: MA-19, MA-48

@@ -3,9 +3,9 @@ what:   two files declare the same stream name and disagree at seq 1, and one
         writer's timestamps go backwards. Both are FINDINGS: printed with the
         file, stream and sequence that produced them, and neither changes the
         exit code
-run:    sh validator/evp-verify vectors/12-seam-findings/pkg
+run:    sh validator/martelage-verify vectors/12-seam-findings/pkg
 exit:   0
 must print:
   - "two record stream files disagree about stream 'note' at seq 1"
   - "timestamp goes backwards"
-requirements exercised: EV-40, EV-46, EV-72
+requirements exercised: MA-40, MA-46, MA-72

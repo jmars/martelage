@@ -2,12 +2,12 @@ vector: 11-chain-omission
 what:   the same chain, but pkg-2 drops pkg-1's first record and renumbers the
         rest: every internal check of pkg-2 passes, and only the chain shows the
         omission — the one thing no internal layer can see
-run:    sh validator/evp-verify --prev-package vectors/11-chain-omission/pkg-1 \
+run:    sh validator/martelage-verify --prev-package vectors/11-chain-omission/pkg-1 \
           vectors/11-chain-omission/pkg-2
 exit:   1
-also:   sh validator/evp-verify vectors/11-chain-omission/pkg-2   ->  exit 0:
+also:   sh validator/martelage-verify vectors/11-chain-omission/pkg-2   ->  exit 0:
         unarmed, the omission is invisible. That is the layer-3 residual stated
         rather than hidden.
 must print:
   - "is not a prefix of the same stream in the supplied previous package"
-requirements exercised: EV-45, EV-50
+requirements exercised: MA-45, MA-50
