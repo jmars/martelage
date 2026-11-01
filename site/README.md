@@ -48,17 +48,34 @@ make -C site pdf     # typst compile martelage.typ martelage-0.1.pdf   (SOURCE_D
 make -C site check   # python3 tools/checktext.py       -> every HTML text node present in the PDF
 ```
 
-Geometry, measured rather than assumed: **A4 landscape, 12 mm margins** — the same page the print
-stylesheet asks for, and for the same reason. The pasted terminal output has lines up to 217
-characters; at a portrait 186 mm shell the 169-character block would have to be set at 5.2 pt and the
-217-character line at 4.05 pt, which is unreadable. Prose is 66 characters (99 mm) of Libertinus
-Serif at 10.5 pt, line advance 1.45 × 10.5 pt; tables and code take the full 273 mm shell, as they do
-on the web, where `pre` and `table` are not held to the prose measure. Code is Noto Sans Mono at
-8.5 pt on `#F0EDE4` with a hairline `#D8D4C6` rule. Nothing is coloured by state.
+Geometry, measured rather than assumed: **A4 portrait, 12 mm margins** — a 186 mm shell, with prose
+on a 99 mm measure (66 characters) of Libertinus Serif at 10.5 pt, line advance 1.45 × 10.5 pt. The
+measure is the same 99 mm the landscape artifact used: the paper orientation changed, the typography
+did not. Tables take the 186 mm portrait shell, as `table` is not held to the prose measure on the
+web. Code is Noto Sans Mono at 8.5 pt on `#F0EDE4` with a hairline `#D8D4C6` rule. Nothing is
+coloured by state.
 
-Pasted output is never re-flowed as though the program had printed it that way. A block whose longest
-line does not fit the 267 mm inner width is set smaller (one block: 7.38 pt); a line that would need
-to go below 7 pt is broken at a space and the continuation is marked `↳` (one line in the document:
-the 217-character `residual` line of the first validator output). Two builds of the same source are
-byte-identical: `SOURCE_DATE_EPOCH=0` is pinned in the `Makefile`, so the PDF carries a constant
-creation date instead of the build second.
+Pasted output is never re-flowed as though the program had printed it that way. At 8.5 pt the
+portrait shell holds 99 characters (180.0 mm inner width); a block whose widest line is longer than
+that is set **smaller** — as small as that line needs, but never below a **7 pt legibility floor**,
+where the column holds 120 characters. Seven of the twelve blocks are set smaller: two at 7.79 pt
+and one at 7.58 pt, whose widest line fits unbroken at that size, and four at the 7 pt floor. A line
+that does not fit even at 7 pt is broken **at a space** and the continuation is marked `↳`, so it is
+the marker, not the typesetter, that says a line was broken: eight lines in the document carry one,
+no line carries more than one, and every other byte of the block is unchanged. `make check` enforces
+that — it compares each block against the HTML byte for byte after undoing the marked breaks, and
+reports any other difference as a miss. A block taller than the page breaks across a page boundary
+like any other code. Two builds of the same source are byte-identical: `SOURCE_DATE_EPOCH=0` is
+pinned in the `Makefile`, so the PDF carries a constant creation date instead of the build second.
+
+**One orientation.** Every page is A4 portrait: the artifact contains no rotated sheet, no landscape
+insert, and no block that moves to a wider one. MEASURED on the built PDF — 12 pages, 12 `/MediaBox`
+entries, **one distinct value** (`0 0 595.2756 841.8898`), and no `/Rotate` on any page. That is 12
+pages against the landscape build's 16 and the portrait-with-flipped-inserts build's 22: the flip
+cost six pages over landscape because each insert broke the page before and after it, and putting
+code back into the portrait column gives those pages back. The browser print path is a different
+path, and is stated plainly rather than matched: `@media print` in `site.css` still asks for
+`size: landscape` and `white-space: pre-wrap`, so printing the HTML from a browser gives a landscape
+sheet whose pasted lines re-wrap, while the artifact is portrait and marks every break it makes. The
+two paths differ on purpose — the HTML print path is the fallback, and the artifact is the one that
+does not re-wrap.

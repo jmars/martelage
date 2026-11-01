@@ -12,17 +12,23 @@ Determinism: the output is a pure function of the two input files' bytes. No tim
 no dictionary-order iteration, no environment reads.
 
 Geometry, measured (see site/README.md for the numbers behind it):
-  * A4 landscape, 12 mm margins -> 273 mm shell. The browser print stylesheet makes the
-    same choice (@page { size: landscape; margin: 12mm }) and for the same reason: the
-    pasted terminal output has lines up to 217 characters, and portrait would force the
-    169-character block to 5.2 pt and the 217-character line to 4.05 pt.
+  * A4 PORTRAIT, 12 mm margins -> 186 mm shell, on every page. The artifact has ONE
+    orientation: no page is rotated, no block moves to a wider sheet. Prose is set to a
+    99 mm measure, so the paper does not change the typography, only how much of it is on
+    a page.
   * Prose measure 99 mm = 66 characters of Libertinus Serif at 10.5 pt (measured
     1.4976 mm per character on real prose from these pages).
   * Code 8.5 pt Noto Sans Mono on #F0EDE4 with a hairline #D8D4C6 rule; 1.799 mm per
-    character at 8.5 pt, and 267.0 mm of inner width (273 - 2 x 8.5 pt inset and stroke),
-    so 146 characters fit with 1% slack. A block whose longest
-    line does not fit is shrunk to fit down to a 7 pt floor; below that floor the line is
-    split at a space with a '↳' continuation marker rather than silently wrapped.
+    character at 8.5 pt, and 180.0 mm of inner width in portrait (186 - 2 x 8.5 pt inset
+    and stroke), so 99 characters fit with 1% slack.
+  * A block whose longest line does not fit those 99 characters is set SMALLER -- as
+    small as it needs, but never below the 7 pt legibility floor. At 7 pt the column holds
+    120 characters.
+  * A line that still does not fit at 7 pt is split at a space and its continuation is
+    marked with '↳'. Nothing is re-flowed silently: an unmarked wrap would be a false
+    claim about what the program printed.
+  * A block taller than the page is allowed to break across a page boundary, like any
+    other code in a document.
 """
 
 import html.parser
@@ -35,46 +41,56 @@ SITE = os.path.join(os.path.dirname(HERE), "site")
 SOURCES = [("index.html", "index"), ("usage.html", "usage")]
 
 # Page geometry, in millimetres. Kept as literals here and as literals in the preamble:
-# the converter needs the numbers to decide per-block code sizes, and the preamble needs
-# them to set the page.
-SHELL_MM = 273.0          # 297 mm - 2 * 12 mm
-CODE_INSET_PT = 8.0       # code block horizontal inset
-CODE_STROKE_PT = 0.5      # hairline rule, drawn inside the block's own width
-FIT_SAFETY = 0.99         # a pasted line must fit with slack: Typst breaks raw lines at
-                          # spaces when they are over by even a fraction of a point
-MONO_ADVANCE_EM = 0.6     # Noto Sans Mono advance, measured in Typst: 8.5 pt -> 1.79917 mm
+# the converter needs the numbers to decide per-block code placement, and the preamble
+# needs them to set the page.
+PORTRAIT_SHELL_MM = 186.0  # 210 mm - 2 * 12 mm; the shell of every page in the artifact
+CODE_INSET_PT = 8.0        # code block horizontal inset
+CODE_STROKE_PT = 0.5       # hairline rule, drawn inside the block's own width
+FIT_SAFETY = 0.99          # a pasted line must fit with slack: Typst breaks raw lines at
+                           # spaces when they are over by even a fraction of a point
+MONO_ADVANCE_EM = 0.6      # Noto Sans Mono advance, measured in Typst: 8.5 pt -> 1.79917 mm
 PT_MM = 25.4 / 72.0
 CODE_SIZE_PT = 8.5
 CODE_FLOOR_PT = 7.0
-CONTINUATION = "\u21b3"   # ↳: marks a line broken by this converter, not by the program
-
-CODE_INNER_MM = SHELL_MM - 2 * (CODE_INSET_PT + CODE_STROKE_PT) * PT_MM
-CODE_LIMIT_MM = CODE_INNER_MM * FIT_SAFETY
+CONTINUATION = "\u21b3"    # ↳: marks a line broken by this converter, not by the program
 
 
-def chars_that_fit(size_pt):
-    return int(CODE_LIMIT_MM // (MONO_ADVANCE_EM * size_pt * PT_MM))
+def code_inner_mm(shell_mm):
+    """Usable width inside a code block on a page whose text width is `shell_mm`."""
+    return shell_mm - 2 * (CODE_INSET_PT + CODE_STROKE_PT) * PT_MM
 
 
-def fit_size(longest):
+def code_limit_mm(shell_mm):
+    return code_inner_mm(shell_mm) * FIT_SAFETY
+
+
+def chars_that_fit(shell_mm, size_pt):
+    return int(code_limit_mm(shell_mm) // (MONO_ADVANCE_EM * size_pt * PT_MM))
+
+
+def line_mm(chars, size_pt):
+    """Rendered width of a `chars`-character pasted line at `size_pt`."""
+    return chars * MONO_ADVANCE_EM * size_pt * PT_MM
+
+
+def fit_size(shell_mm, longest):
     """Point size at which `longest` characters fit one line, capped at 8.5 pt."""
-    need = CODE_LIMIT_MM / (MONO_ADVANCE_EM * longest * PT_MM)
+    need = code_limit_mm(shell_mm) / (MONO_ADVANCE_EM * longest * PT_MM)
     if need >= CODE_SIZE_PT:
         return CODE_SIZE_PT
     # Round down to 0.01 pt so the size never exceeds what was measured as fitting.
     return int(need * 100) / 100.0
 
 
-def split_long_lines(text):
+def split_long_lines(lines, limit):
     """Return (lines, split_at) for a code block: physical lines, and where we broke one.
 
-    A line longer than what 8.5 pt can hold, in a block that would have to drop below the
-    7 pt legibility floor, is broken at the last space that fits and the continuation is
-    marked with CONTINUATION. Nothing is re-flowed silently: the caller records the break.
+    A line that does not fit the portrait column at the 7 pt floor is broken at the last
+    space that fits and the continuation is marked with CONTINUATION. Nothing is re-flowed
+    silently: the caller records the break.
     """
-    limit = chars_that_fit(CODE_SIZE_PT)
     out, broke = [], []
-    for line in text.split("\n"):
+    for line in lines:
         if len(line) <= limit:
             out.append(line)
             continue
@@ -90,6 +106,21 @@ def split_long_lines(text):
         out.append(rest if first else CONTINUATION + " " + rest)
         broke.append(len(line))
     return out, broke
+
+
+def place_block(longest, lines):
+    """Decide one block's size by measurement, and break a line that cannot be set legibly.
+
+    Returns (size_pt, lines, split_lengths). The artifact is portrait throughout, so there
+    is no wider sheet to move a block to: a block whose widest line does not fit the 186 mm
+    shell at 8.5 pt is set smaller, down to the 7 pt legibility floor. A line that still
+    does not fit at 7 pt is split with a marked continuation rather than wrapped silently.
+    """
+    size = fit_size(PORTRAIT_SHELL_MM, longest)
+    if size >= CODE_FLOOR_PT:
+        return size, lines, []
+    out, broke = split_long_lines(lines, chars_that_fit(PORTRAIT_SHELL_MM, CODE_FLOOR_PT))
+    return CODE_FLOOR_PT, out, broke
 
 
 # ----------------------------------------------------------------- HTML parsing
@@ -251,7 +282,7 @@ def link(n):
 class Doc:
     def __init__(self):
         self.lines = []
-        self.code_blocks = []   # (source, longest, size, split_lengths)
+        self.code_blocks = []   # (source, longest, size, split_lengths, placement)
 
     def add(self, s):
         self.lines.append(s)
@@ -322,16 +353,12 @@ class Doc:
     def code(self, node, source):
         pre = find(node, "code") or node
         text = pre.text()
-        lines, broke = split_long_lines(text) if fit_size(
-            max((len(l) for l in text.split("\n")), default=0)) < CODE_FLOOR_PT else (
-            text.split("\n"), [])
-        longest = max((len(l) for l in text.split("\n")), default=0)
-        size = fit_size(longest) if not broke else CODE_SIZE_PT
-        if size < CODE_FLOOR_PT:
-            size = CODE_SIZE_PT
+        lines = text.split("\n")
+        longest = max((len(l) for l in lines), default=0)
+        size, out_lines, broke = place_block(longest, lines)
         self.code_blocks.append((source, longest, size, broke))
         self.add('#code-block(size: %.2fpt)[#raw("%s", block: true, lang: "text")]'
-                 % (size, esc("\n".join(lines))))
+                 % (size, esc("\n".join(out_lines))))
 
     def table(self, node):
         rows, caption = [], None
@@ -371,8 +398,9 @@ class Doc:
                 for i in range(head_rows) for j in range(ncols))
             cells = cells[head_rows * ncols:]
         # Auto columns would let a long cell widen the table past the shell (measured: the
-        # exit-code table reached 388mm on a 273mm shell), so only the leading column is
-        # auto and the rest share the remaining width.
+        # exit-code table reached 388mm on the old 273mm landscape shell), so only the
+        # leading column is auto and the rest share the remaining width. The shell is 186mm
+        # on every page and a table's cells wrap rather than widen it.
         cols = "(auto, %s)" % ", ".join(["1fr"] * (ncols - 1)) if ncols > 1 else "auto"
         self.add("#block(width: 100%%, above: 0.4em, below: 1.1em)[#table(\n"
                  "  columns: %s, align: left + horizon, inset: (x: 6pt, y: 4.5pt),\n"
@@ -485,13 +513,13 @@ PREAMBLE = r"""// MARTELAGE-0.1 -- typeset print artifact of the standard's expl
 #show raw: set text(font: mono)
 
 // Prose measure: 66 characters of Libertinus Serif at 10.5pt (measured 1.4976 mm per
-// character on this prose). Tables and code take the full 273mm shell, as on the web,
-// where pre and table are not held to the prose measure.
+// character on this prose). The page is portrait, so this measure is what sets the
+// typography; the paper's long edge is used for the pasted blocks that need it.
 #let measure = 99mm
 
 #set page(
-  width: 297mm,
-  height: 210mm,
+  width: 210mm,
+  height: 297mm,
   margin: 12mm,
   footer: context {
     set text(size: 8pt, fill: muted)
@@ -515,7 +543,10 @@ PREAMBLE = r"""// MARTELAGE-0.1 -- typeset print artifact of the standard's expl
 #let ic(body) = box(text(font: mono, size: raw-size(9.1875pt))[#raw(body, block: false)])
 
 // A pasted block: #F0EDE4 fill, hairline rule, fixed line structure. `size` is chosen per
-// block by the converter so that no shipped line is wrapped; see site/README.md.
+// block by the converter so that no shipped line is wrapped; a block whose widest line does
+// not fit the 186mm portrait shell at 8.5pt is set smaller, down to the 7pt legibility floor,
+// and a line that still does not fit is split with a marked continuation. `breakable` lets a
+// block taller than the page flow across a page boundary like any other code. See site/README.md.
 #let code-block(size: 8.5pt, body) = block(
   width: 100%,
   fill: surface,
@@ -524,6 +555,7 @@ PREAMBLE = r"""// MARTELAGE-0.1 -- typeset print artifact of the standard's expl
   radius: 2pt,
   above: 0.9em,
   below: 1.0em,
+  breakable: true,
   text(font: mono, size: raw-size(size), fill: ink, body),
 )
 
@@ -616,12 +648,17 @@ def main(argv):
     dest = os.path.join(SITE, "martelage.typ")
     with open(dest, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
-    for source, longest, size, broke in blocks:
+    portrait_room = chars_that_fit(PORTRAIT_SHELL_MM, CODE_SIZE_PT)
+    floor_room = chars_that_fit(PORTRAIT_SHELL_MM, CODE_FLOOR_PT)
+    print("portrait text width %.3f mm: %d chars at %.1fpt, %d chars at the %.1fpt floor"
+          % (code_limit_mm(PORTRAIT_SHELL_MM), portrait_room, CODE_SIZE_PT,
+             floor_room, CODE_FLOOR_PT))
+    for i, (source, longest, size, broke) in enumerate(blocks, 1):
         note = ""
         if broke:
-            note = "; split %s with a continuation marker" % broke
-        print("%-6s longest line %3d chars -> %.2fpt%s"
-              % (source, longest, size, note))
+            note = "; %d marked continuation(s) for %s chars" % (len(broke), broke)
+        print("%2d %-6s longest %3d chars = %6.1f mm at %.2fpt%s"
+              % (i, source, longest, line_mm(longest, size), size, note))
     print("wrote %s (%d bytes)" % (dest, len(text.encode())))
     return 0
 
