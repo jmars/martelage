@@ -289,16 +289,111 @@ verdict      CANNOT DECIDE — 1 input(s) this validator needs were absent</code
 
 verdict      CONFORMANT</code></pre>
 
-<p>Three profiles exist at this version (§9.3): <code>p1-second-party-digest</code>, a digest of the
-package held by an identified party other than the operator — the base validator verifies it fully;
-<code>p2-append-only-log</code>, an entry in a ledger held by someone else — the base validator can
-compare a digest the log states to the package digest, but a matching digest still leaves inclusion
-undecided, so it reports exit 3 and names what it could not check; and
-<code>p3-eidas-qualified-seal-asic-e</code>, a qualified seal by a legal person — the base validator
-cannot verify a signature, so it reports exit 3 and names the profile-specific verifier it is not. A
-seal made with the operator's own key is worthless against the operator, because they hold the key
-(§9.3). An anchor never says the record is true or complete: it says a digest existed, at a time, by
-someone else (§7.5 MA-52, §3.7 MA-15).</p>
+<p>Which profile a package names decides what a verifier can do with its anchor, and one of the three
+is an EU qualified seal. The profiles have <a href="#anchors">their own section</a>.</p>
+</section>
+
+<section id="anchors">
+<h2>The anchor slot: three named profiles</h2>
+
+<p>The anchor is a slot with named profiles, not one vendor: §9.3 names three at this version and
+leaves the slot open to others (§9.1(c) MA-61). It gets a section of its own because layer 4 is the
+only layer whose witness the operator cannot recompute (§7.5 MA-52) — and because the profile a
+package names is the thing that decides what a verifier can actually check. What no profile changes is
+the claim's force: an anchor never says the record is true or complete, only that a digest existed, at
+a time, by someone else (§3.7 MA-15, §7.5 MA-52).</p>
+
+<div class="table-scroll" role="region" tabindex="0" aria-label="The three anchor profiles at this version">
+<table>
+<caption>The three anchor profiles at this version (§9.3)</caption>
+<thead>
+<tr>
+<th scope="col">profile</th>
+<th scope="col">wire string — the value of <code>anchor.profile</code></th>
+<th scope="col">what the base validator does with it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P1</td>
+<td><code>p1-second-party-digest</code></td>
+<td>Verifies it fully: the holder's digest must equal the package digest (§9.3 MA-64).</td>
+</tr>
+<tr>
+<td>P2</td>
+<td><code>p2-append-only-log</code></td>
+<td>Compares a digest the log states to the package digest. A digest that contradicts the package is
+a refusal (exit 1); a digest that matches still leaves inclusion undecided, so it reports exit 3 and
+names what it could and could not check (§9.3, §10.3 MA-70).</td>
+</tr>
+<tr>
+<td>P3</td>
+<td><code>p3-eidas-qualified-seal-asic-e</code></td>
+<td>Cannot verify a signature, so it reports exit 3 and names the profile-specific verifier it is not
+(§9.3, §10.3 MA-70).</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<p><code>P1</code>, <code>P2</code> and <code>P3</code> are labels for those strings, never values: a
+manifest writing <code>P3</code>, or the profile's name in any other spelling, is refused as an
+unknown profile (§9.2 MA-63, §9.4 MA-65). The wire string is what a validator matches.</p>
+
+<h3><code>p3-eidas-qualified-seal-asic-e</code> — the EU qualified seal</h3>
+
+<p>P3 is the profile for a deployment that already has to answer to EU law. In the standard's own
+terms it is an ETSI EN 319 162-1 ASiC-E container holding the package files with a CAdES or XAdES
+signature over their digests, created by a legal person <em>other than the operator</em>, with a
+qualified electronic time stamp and optional long-term validation (§9.3 MA-64). The party who seals is
+the point: a seal is only an anchor because someone the operator is not made it.</p>
+
+<p>The claim is a reference, not the seal. A manifest cannot carry a value derived from its own digest
+(§9.1a MA-62), so the container and the trust anchors stay on the verifier's side and the claim only
+says where to get them. This is the claim shape, verbatim from §9.3:</p>
+
+<pre><code>{"container":…,"sealer":…,"seal":"qualified-electronic-seal",
+ "timestamp":"qualified"|"none","ltv":&lt;bool&gt;}</code></pre>
+
+<p>What the reference validator does with that claim is nothing, and it says so. It cannot verify a
+signature — that needs a signature verifier and trust anchors — so it reports exit code
+<code>3</code> CANNOT DECIDE and names the profile-specific verifier requirement (§9.3, §10.3
+MA-70). That is the standard's own rule applied rather than an omission: a claimed anchor the verifier
+cannot verify MUST NOT pass (§9.1(e) MA-61). Nor does a specialised verifier get a lighter contract
+for being specialised — a profile-specific verifier MUST report under §10, the same exit codes and the
+same report items (§9.3, §10.4 MA-71) — so "we sealed it" is not a way to skip the report.</p>
+
+<p><strong>Status: specified, not built.</strong> P3 is specified in §9.3 and implemented nowhere in
+this repository. The base validator stops at exit code <code>3</code> by design. There is no signature
+verifier here, no ASiC-E implementation and no eIDAS certification of anything; a profile-specific
+verifier would be a second implementation, and the standard already says what it must do and what it
+takes as input (<code>--trust-anchors DIR</code>, §10.2 MA-69). Until one exists, a P3 claim in a
+package is a claim this repository's only validator cannot decide — and reports as undecided rather
+than passing (§10.4 item 10, MA-71).</p>
+
+<p>§9.3 requires three limits to be stated wherever P3 is offered. They are the profile's terms, not
+its small print:</p>
+
+<ul>
+<li><strong>(i) A seal made with the operator's own key is worthless against the operator</strong>,
+because they hold the key. Only a seal by a different legal person, or a qualified time stamp, is out
+of their reach — and even then the trust service attests only what it was handed (§9.3).</li>
+<li><strong>(ii) A single seal does not stop a re-forged history.</strong> The operator can doctor a
+package and have <em>that</em> sealed. What defeats it is custody of prior packages by the other
+party, so the seal multiplies the chain and does not replace it (§9.3).</li>
+<li><strong>(iii) The legal presumption that attaches to a qualified seal is a presumption about
+integrity and origin, not a technical guarantee of truth or completeness</strong>, and it must be kept
+distinct from the residual of §3.3 in any document that cites both (§9.3).</li>
+</ul>
+
+<p>What P3 rests on is in Annex B, and nothing beyond it is claimed here. Item 10 adopts eIDAS
+(Regulation (EU) No 910/2014) and ETSI EN 319 162-1 as the basis of P3, with the three limits above,
+and records why the presumption stops where it does: it attaches to the integrity and origin of the
+sealed data, not to its truth or completeness. Item 11 records eIDAS 2.0 (Regulation (EU) 2024/1183)
+as introducing the EU Digital Identity Wallet and qualified attestations of attributes about
+<em>persons</em> — and marks the consequence a PROJECTION in the §0.4 sense (MA-4): no change for a
+package at this version, because the seal, timestamp and preservation instruments P3 uses are the
+910/2014 ones (Annex B items 10–11).</p>
 </section>
 
 <section id="limits">

@@ -34,6 +34,23 @@ manifest, a scope statement, an anchor statement — and one generic JSON bindin
 normative clause names a particular implementation's file, path, tool or field spelling. Annex A is
 the one place a specific system is named, and it is informative.
 
+## Anchor profiles
+
+The anchor slot names one of three profiles at this version (§9.3), and the wire string is what a
+validator matches: `p1-second-party-digest` — a digest of the package held by an identified party
+other than the operator, which the base validator verifies fully; `p2-append-only-log` — an entry in a
+ledger held by someone else, whose stated digest the base validator compares to the package digest, a
+match still leaving inclusion undecided, so it reports exit 3; and
+`p3-eidas-qualified-seal-asic-e` — an ETSI EN 319 162-1 ASiC-E container holding the package files
+with a CAdES or XAdES signature by a legal person other than the operator, with a qualified electronic
+time stamp and optional long-term validation. **P3 is specified, not built:** the base validator
+cannot verify a signature — that needs a signature verifier and trust anchors — so it stops at exit
+code 3 and names the profile-specific verifier it is not, and this repository ships no signature
+verifier, no ASiC-E implementation and no eIDAS certification. §9.3 requires three limits to be stated
+wherever P3 is offered; [the anchor profiles section of the site](site/usage.html#anchors) states them
+in full, the first being that a seal made with the operator's own key is worthless against the
+operator, because they hold the key.
+
 ## Running the validator
 
 ```sh
