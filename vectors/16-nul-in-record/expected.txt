@@ -1,0 +1,10 @@
+vector: 16-nul-in-record
+what:   a NUL byte inside a record body. Every digest is correct — the body hashes
+        to the body_sha the record carries — so only §5.1.3 catches it: a NUL
+        cannot be carried in a JSON string, and silently truncating it would edit
+        the record. Before this vector the refusal ran on the manifest only
+run:    sh validator/evp-verify vectors/16-nul-in-record/pkg
+exit:   1
+must print:
+  - "control byte cannot be carried in a record stream file"
+requirements exercised: EV-24

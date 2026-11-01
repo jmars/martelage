@@ -1,0 +1,17 @@
+vector: 23-claim-carries-digest
+what:   a p1 claim carries a field called "digest" holding a 64-hex value, and
+        the holder's real digest is supplied as evidence so nothing else is
+        undecidable. §9.1a (EV-62) forbids a claim carrying a digest derived from
+        the package — impossible by construction, since a manifest cannot hold its
+        own digest — so a 64-hex claim value is either a digest that has moved or
+        a claim about one the verifier must obtain itself. The check used to look
+        for a field NAMED "held", which is not even a field of this profile
+run:    sh validator/evp-verify --anchor-evidence vectors/23-claim-carries-digest/evidence.txt \
+          vectors/23-claim-carries-digest/pkg
+exit:   1
+also:   sh validator/evp-verify vectors/23-claim-carries-digest/pkg   ->  exit 1
+        as well: the refusal stands, AND the "not decidable" block still names
+        the missing input — a refusal does not make an undecided check invisible
+must print:
+  - "claim field 'digest' carries a bare 64-hex digest"
+requirements exercised: EV-62, EV-70

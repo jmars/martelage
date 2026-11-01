@@ -54,7 +54,7 @@ a body chosen by the payload's own record contract.
 
 **Stream.** A named, independently hash-chained sequence of records inside one record stream file.
 Streams are per writer and per subject-matter; two writers' records are never merged into one
-stream (§5.6).
+stream (§6.6).
 
 **Sequence.** The 1-based position of a record within its stream, with no gaps.
 
@@ -68,10 +68,10 @@ in the package, because the manifest lists every file's digest.
 predecessor.
 
 **Scope statement.** The manifest section that says what the package contains and — separately —
-what it does not, each absence carrying a meaning from a fixed vocabulary (§7).
+what it does not, each absence carrying a meaning from a fixed vocabulary (§8.3).
 
 **Anchor statement.** The manifest section that says whether a party other than the producer holds
-this package's digest, and under which named profile (§8).
+this package's digest, and under which named profile (§9.3).
 
 **Producer.** The program and the party that assembled the package. **Operator.** The party with
 administrative control of the machine the producer ran on. They are usually the same party and this
@@ -88,21 +88,21 @@ trusted by the producer to be anything in particular.
 There is no other definition, no level above it and no level below it. — **EV-6**
 
 1. It is a directory containing `package.json` and at least one record stream file (§3).
-2. The manifest is canonical JSON (§4.1) with the required fields of §4.2, and its scope (§7) and
-   anchor (§8) sections use the vocabularies defined here.
+2. The manifest is canonical JSON (§5.1) with the required fields of §5.2, and its scope (§8) and
+   anchor (§9) sections use the vocabularies defined here.
 3. Every file listed in the manifest is present with the listed byte length and `sha256` (§4.4).
 4. Every record stream file is a well-formed envelope stream (§6): line 1 is a stream manifest, and
-   the records form per-stream sequences 1..n with no gaps and a correct predecessor chain (§5).
-5. A validator implementing §9 reports it conformant (exit code 0) when run with no verifier inputs
+   the records form per-stream sequences 1..n with no gaps and a correct predecessor chain (§6).
+5. A validator implementing §10 reports it conformant (exit code 0) when run with no verifier inputs
    beyond the package directory.
 
 **2.2 Conformance is not a claim about the records.** A conformant package MAY contain records that
 are false, and MAY omit records that existed. Conformance says the package is *well-formed and
-self-consistent*; it says nothing about truth or completeness (§5.5, §9.6). — **EV-7**
+self-consistent*; it says nothing about truth or completeness (§7.2.3, §10.7). — **EV-7**
 
 **2.3 There is one level, deliberately.** This standard has no maturity ladder. A ladder reads as
 "the lower tier is deficient", which is backwards: the unanchored tier is the adoption surface, and
-the anchor is an optional slot inside it (§8.1). — **EV-8**
+the anchor is an optional slot inside it (§9.1). — **EV-8**
 
 **2.4 How a third party claims conformance.** By publishing a statement, in its own name, that its
 producer emits packages conformant with `evp 0.1`, and naming the requirements it relies on and any
@@ -128,8 +128,11 @@ passes. This is not a defect to be designed away; it is the residual every mecha
 measured against, and no clause in this document may imply otherwise. — **EV-11**
 
 **3.3 The residual sentence.** Every validator conforming to this standard MUST print the following
-two sentences, verbatim, on every run, including a run that reports the package conformant: —
-**EV-12**
+two sentences, verbatim, on every run **that names a package**, including a run that reports the
+package conformant, and including a run that ends at exit code 2 because the package could not be
+read: the residual is not a claim about the package, so it is not dropped when the report is. A run
+that names no package at all — a usage error before a target is known — has nothing to report on.
+— **EV-12**
 
 > A package proves that what it contains was not altered after it left; it cannot prove that what it
 > contains is all there was, and against an operator who rewrote everything before the first anchor
@@ -144,11 +147,11 @@ credit the weakest with the strength of the strongest.
 
 | # | Mechanism | What it buys | What it does not |
 |---|---|---|---|
-| i | Internal consistency (§5.1–5.4) | A partial or sloppy rewrite shows as a break: a moved body digest at a fixed position, a gap, a count that disagrees with the payload. | A wholesale, internally consistent rewrite passes. |
-| ii | Staleness against the previous package (§5.7) | Converts an invisible omission into a break visible one package later — if someone kept the earlier package. | An operator who starts a fresh chain and was watched by nobody. |
+| i | Internal consistency (§5.1–5.2, §6.2, §7.1–7.2) | A partial or sloppy rewrite shows as a break: a moved body digest at a fixed position, a gap, a count that disagrees with the payload. | A wholesale, internally consistent rewrite passes. |
+| ii | Staleness against the previous package (§7.4) | Converts an invisible omission into a break visible one package later — if someone kept the earlier package. | An operator who starts a fresh chain and was watched by nobody. |
 | iii | Witnesses outside the audited subject (§3.6) | Forces the operator to rewrite *more* places consistently. | Stops the operator. Each extra rewrite is another place to contradict a copy someone else holds — it multiplies cost, never prevention. |
 | iv | The enrollment gap (§3.5) | Nothing. It is named so it is not hoped away. | — |
-| v | The external anchor (§8) | Proves a digest existed at a time, held by someone other than the operator. | Truth, completeness, or that the operator told the witness everything. |
+| v | The external anchor (§9) | Proves a digest existed at a time, held by someone other than the operator. | Truth, completeness, or that the operator told the witness everything. |
 
 **3.5 The enrollment gap, named not hoped away.** A coherent tamper performed before the first
 observation of the subject, and before the first anchor exists, is undetectable by any local
@@ -159,9 +162,12 @@ mechanism in this standard. This is stated in the normative body, printed by eve
 ledger that a party the audited subject cannot write supplies, and that the record must be
 consistent with. Its power is exactly cost multiplication: an invented record must wear a token the
 witness never issued, or agree with a counter the witness never moved. Where the witness runs on the
-same host as the subject, it is inside the operator's reach and its power is bounded accordingly;
-the standard requires the package to say where a witness runs, and forbids describing a same-host
-witness as an external anchor. — **EV-14**
+same host as the subject, it is inside the operator's reach and its power is bounded accordingly; the
+package MUST say where a witness runs, **in band**: in a `bound[]` entry or in the scope statement,
+naming the witness and the host it runs on. This standard defines no field for it, and no validator can
+check it — whether a token was issued, and from which host, is not a property of the package's bytes,
+so it is listed among what no validator can check (§10.7) and is the producer's claim under its own
+name. Describing a same-host witness as an external anchor is forbidden. — **EV-14**
 
 **3.7 What an anchor does and does not prove.** An anchor proves that a specific digest existed at a
 specific time and was held by a party other than the operator. It never proves the record is true,
@@ -258,16 +264,21 @@ best-effort parse. — **EV-25**
 **5.2.2 `producer`.** Who assembled the package. `id` is the producing party or system's name,
 `component` the program, `version` that program's version, `contract` the identifier and version of
 the *payload's record contract* (for example `"<contract-id> <version>"`). The package standard and
-the record contract are different layers, versioned independently (§11.2). — **EV-26**
+the record contract are different layers, versioned independently (§11.1). — **EV-26**
 
 **5.2.3 `subject`.** What the records are about. `id` MUST be a *content* identity of the subject —
 a digest over the subject's own content identity, never a filesystem path, never a hostname, never
 an account name. `kind` is the producer's classification of the subject. Publishing a path or a host
 identity here is non-conformant, because a path is not part of a record and a subject identity that
-names a machine invites reading the package as a record about a person. — **EV-27**
+names a machine invites reading the package as a record about a person. A validator MUST refuse an `id`
+shaped like a path (a `/` segment, or a bare `.` or `..`), and MUST NOT report the rest as checked: it
+cannot tell a digest from a hostname or an account name, so that half of this rule is the producer's
+obligation and is listed among what no validator can check (§10.7). — **EV-27**
 
 **5.2.4 `created_at`.** The producer's epoch at assembly, or `null` where it records none. A
-timestamp MUST NOT be rendered as `0` to mean absent. — **EV-28**
+timestamp MUST NOT be rendered as `0` to mean absent: a reader cannot tell "the epoch" from "the
+producer records none", and the second is the honest answer. A validator MUST refuse a `created_at` of
+`0`, and a record whose `ts` is `0` (§6.2 states the same rule for a record). — **EV-28**
 
 **5.2.5 `prev`.** The predecessor package's digest and where that value came from: `"state"` (a
 chain state file the producer keeps), `"given"` (a value supplied to the producer), `"none"` (no
@@ -280,9 +291,9 @@ or `package_sha` null with `how` not equal to `"none"`. — **EV-29**
 package) and `evidence` (verifier-side material the producer is passing along, never required for
 conformance). — **EV-30**
 
-**5.2.7 `scope`.** §7.
+**5.2.7 `scope`.** §8.
 
-**5.2.8 `anchor`.** §8.
+**5.2.8 `anchor`.** §9.
 
 **5.2.9 `counts`.** `files` MUST equal the number of entries in `files[]`; `records` MUST equal the
 number of record lines across all record stream files (line 1 of each such file is a stream
@@ -350,7 +361,7 @@ assigned a sequence number, and MUST NOT be chained. — **EV-38**
 different writers MUST NOT be merged into one stream, and a producer MUST NOT renumber, re-chain or
 interleave two writers' records into a single chain. If two writers' records must travel together,
 the package carries two record stream files, and a validator checks each independently and reports
-any disagreement between them as a finding (§9.5). A merge would manufacture an agreement between
+any disagreement between them as a finding (§10.5). A merge would manufacture an agreement between
 writers that neither wrote. — **EV-39**
 
 **6.7 The seam rule.** A package MAY carry more than one record stream file. Each is validated on
@@ -365,7 +376,7 @@ one. — **EV-40**
 
 The layers are numbered because their powers differ and a reader will otherwise credit the weakest
 with the strength of the strongest. Every validator report MUST show which layers were armed
-(§9.4), and MUST NOT let an unarmed layer read as a pass.
+(§10.4 item 6), and MUST NOT let an unarmed layer read as a pass.
 
 ### 7.1 Layer 0 — the record body
 
@@ -430,7 +441,7 @@ operator nobody was watching, which is exactly what `prev.how` discloses. — **
 
 ### 7.5 Layer 4 — the external anchor
 
-Defined in §8. It is the only layer whose witness the operator cannot recompute, and it still never
+Defined in §9. It is the only layer whose witness the operator cannot recompute, and it still never
 says the record is true or complete: it says a digest existed, at a time, by someone else. —
 **EV-52**
 
@@ -510,7 +521,10 @@ conformant (§10.3 exit codes 1 and 3).
 its own digest: any claim field holding the package digest, or an entry identifier assigned to that
 digest, would change the digest that the field is supposed to bind, and the claim would be false the
 moment it was written. Anchor evidence is therefore verifier-side by construction, and a claim
-carries only what a verifier needs in order to go and obtain that evidence. — **EV-62**
+carries only what a verifier needs in order to go and obtain that evidence. A validator MUST refuse a
+claim any of whose values is a bare 64-hex digest, whatever the field holding it is called: the name of
+a field is not what makes a claim false, and a claim carries references and procedures, never a
+digest. — **EV-62**
 
 **9.2 Schema.** — **EV-63**
 
@@ -519,35 +533,40 @@ carries only what a verifier needs in order to go and obtain that evidence. — 
 ```
 
 When `anchored` is `false`: `profile`, `binds` and `claim` MUST all be `null`. When `anchored` is
-`true`: `profile` MUST name a profile of §9.3 (or a profile published elsewhere and named in
-`claim`), `binds` MUST be `"manifest-digest"` (the anchor binds `sha256` of the manifest bytes), and
-`claim` MUST be an object in that profile's schema. Any other combination is a refusal.
+`true`: `profile` MUST be the exact wire string of a profile of §9.3 — `p1-second-party-digest`,
+`p2-append-only-log` or `p3-eidas-qualified-seal-asic-e` — or a profile published elsewhere and named
+in `claim`; `binds` MUST be `"manifest-digest"` (the anchor binds `sha256` of the manifest bytes); and
+`claim` MUST be an object in that profile's schema. The `P1`/`P2`/`P3` markings of §9.3 are labels for
+those strings, never values: a manifest writing `P1`, `p1`, or a profile's name in any other spelling
+is refused as an unknown profile (§9.4). Any other combination is a refusal.
 
-**9.3 The profiles at this version.** — **EV-64**
+**9.3 The profiles at this version.** Each profile has exactly one **wire string**: the value written
+in `anchor.profile`, given below in code. That string is what a validator matches — no abbreviation, no
+`P1` shorthand and no re-casing is accepted (§9.4). — **EV-64**
 
-**P1 `second-party-digest`** — a digest of the package held by an identified party other than the
-operator: a second host, a colleague's kept copy, a printed log line.
+**P1, wire string `p1-second-party-digest`** — a digest of the package held by an identified party
+other than the operator: a second host, a colleague's kept copy, a printed log line.
 Claim: `{"holder":<id>,"held_at":<epoch|null>,"channel":<how the verifier can obtain the digest>}`.
 Evidence: `--anchor-evidence` carrying the holder's digest (64 hex, or a file whose first 64-hex
 token is that digest). The base validator verifies this profile fully: the holder's digest must equal
 the package digest. This is the minimal adoptable anchor, and it costs one line kept by one other
 machine.
 
-**P2 `append-only-log`** — an entry in a ledger maintained by a party other than the operator, of
-which a transparency log is one construction.
+**P2, wire string `p2-append-only-log`** — an entry in a ledger maintained by a party other than the
+operator, of which a transparency log is one construction.
 Claim: `{"log":<log id>,"inclusion":<how a verifier re-checks inclusion>,"held_at":<epoch|null>}`.
 Evidence: the log's inclusion material, held by the verifier. The base validator can compare a digest
 the log states to the package digest, and cannot re-check inclusion without the log, so it reports
-exit code 3 and names what it could and could not check (§9.4).
+exit code 3 and names what it could and could not check (§10.3, §10.4).
 
-**P3 `eidas-qualified-seal-asic-e`** — an ETSI EN 319 162-1 ASiC-E container holding the package
+**P3, wire string `p3-eidas-qualified-seal-asic-e`** — an ETSI EN 319 162-1 ASiC-E container holding the package
 files with a CAdES or XAdES signature over their digests, created by a legal person other than the
 operator, with a qualified electronic time stamp and optional long-term validation.
 Claim: `{"container":<reference>,"sealer":<legal person>,"seal":"qualified-electronic-seal",
 "timestamp":"qualified"|"none","ltv":<bool>}`.
 Evidence: the container plus the verifier's trust anchors. The base validator cannot verify a
 signature — that needs a signature verifier and trust anchors — so it reports exit code 3 and names
-the profile-specific verifier requirement. A profile-specific verifier MUST report under §9.
+the profile-specific verifier requirement. A profile-specific verifier MUST report under §10.
 
 Three limits travel with P3 and MUST be stated wherever the profile is offered: **(i)** a seal made
 with the operator's own key is worthless against the operator, because they hold the key; only a
@@ -580,9 +599,12 @@ A package that cannot be checked is not one. The validator is part of this stand
 producer.
 
 **10.1 The reference validator.** `validator/evp-verify` in this standard's repository, runnable
-offline with a POSIX shell, `awk`, `sed`, `cmp`, `sort` and `sha256sum` and nothing else — no
-network, no interpreter beyond those, no key material, no service, no producer. It MUST verify a
-base-tier package with no third party, no keys and no trust anchors present. — **EV-68**
+offline with a POSIX shell and the POSIX and coreutils utilities it uses — `awk`, `sed`, `grep`, `cmp`,
+`sort`, `sha256sum`, `tr`, `cut`, `head`, `tail`, `wc`, `find`, `mktemp`, `rm`, `cat` — and nothing
+else: no network, no interpreter beyond those, no key material, no service, no producer. This list is
+normative in the same breath as the requirement: a validator that needs a tool outside it has left the
+base tier, and the list MUST be corrected whenever the reference validator starts using one. It MUST
+verify a base-tier package with no third party, no keys and no trust anchors present. — **EV-68**
 
 **10.2 Inputs.** — **EV-69**
 
@@ -622,8 +644,15 @@ as either would be a false statement; it is not conformant enough to pass, so 3 
 7. every refusal, each naming the check that failed and the file, stream and sequence that produced
    it;
 8. any findings (§10.5), each naming the file, stream and sequence that produced it;
-9. the residual block of §3.3, verbatim;
-10. the verdict.
+9. what the run **ignored**: every key it did not know, counted per `(object, field)` (§5.2.11,
+   §11.5), as a section of its own — and reported as `none` where it ignored nothing;
+10. what the run could **not decide**: every check it could not reach a verdict on, naming the missing
+   input (§10.3). This section MUST be printed on **every** run that prints a report — in particular on
+   a run that also reports refusals, where the undecided check is not what decides the exit code. A
+   refusal must never make an undecided check invisible: exit code 1 and a missing input are two
+   different statements about one package, and an honest report makes both;
+11. the residual block of §3.3, verbatim;
+12. the verdict.
 
 **10.5 Findings are printed and are not non-conformance.** A *finding* is a fact the record shows
 that is not a defect of the package: a non-monotone timestamp within a writer (§7.2.4), two record
@@ -644,6 +673,10 @@ not); an edited scope statement (the package digest moves); a forged anchor clai
 * anything that happened before the first observation or the first anchor (§3.5);
 * the producer's binaries;
 * the honesty of a witness, including a same-host witness (§3.6);
+* where a witness runs, or whether it is outside the audited subject's reach (§3.6): the package can say
+  so in `bound[]` or in its scope, and that statement is the producer's claim, not a checked fact;
+* whether a `subject.id` is a digest rather than a hostname or an account name (§5.2.3): a validator
+  refuses the path shapes it can see and cannot distinguish the rest;
 * who may read the records: a payload's own readability classification is a classification by the
   publisher, and this standard enforces nothing about it. A validator only echoes it.
 
@@ -660,9 +693,19 @@ the payload record contract (`producer.contract`) bump independently. A package 
 record contract without a package version change, and a package version change does not touch the
 record contract. — **EV-76**
 
-**11.2 Additive only inside a version.** New optional manifest fields, new roles, new anchor
-profiles, new scope vocabulary words, new record kinds and new streams are additions and do not
-change `v`. — **EV-77**
+**11.2 Additive only inside a version.** New optional manifest fields, new roles, new record kinds and
+new streams are additions and do not change `v`: a reader that does not know one ignores it and counts
+it (§5.2.11).
+
+A **new value-level vocabulary word is additive to the document, not to an older validator.** A new
+anchor profile name (§9.3) or a new `scope` `meaning` word (§8.3) is an addition to this standard, but it
+is *not* ignorable by a validator that predates it: §9.4 (EV-65) and §8.3 (EV-57) require an unknown
+profile or word to be refused, because guessing at a meaning is worse than refusing. The consequence MUST
+be stated wherever such a word or profile is added — in this document and in a producer's own release
+notes: **a package using one is refused by every conforming validator that does not yet know it**, loudly
+and never as a silent misread (§11.4). Field-level and record-level additions are transparent to an older
+reader; value-level additions are not, and a producer that needs an older validator to accept its
+packages MUST NOT use one. — **EV-77**
 
 **11.3 A version bump is for a change of meaning or a removal**, never for an addition. — **EV-78**
 
@@ -805,8 +848,9 @@ definition.
 > Requirements satisfied: `<list of EV-n>`, or "all of §2.1".
 > Requirements not satisfied, with reason: `<EV-n>: <reason>` or "none".
 > Payload record contract: `<contract id> <version>`.
-> Anchor profile in use: `<none | P1 | P2 | P3>`; if none, "packages are emitted unanchored and say
-> so".
+> Anchor profile in use: `<none | p1-second-party-digest | p2-append-only-log |
+> p3-eidas-qualified-seal-asic-e>` — the exact wire string of §9.3, never the `P1`/`P2`/`P3` label; if
+> none, "packages are emitted unanchored and say so".
 > Validator used: `<reference validator, or the claimant's own implementation, naming it>`.
 > Date: `<date>`. Contact: `<contact>`.
 >

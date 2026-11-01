@@ -1,6 +1,17 @@
 vector: 08-two-writers
 what:   two writers, two record stream files, one package — the seam rule: each
-        file is validated on its own and nothing merges them
+        file is validated on its own and nothing merges them. The two files
+        declare the same stream name and disagree at seq 1, so a FINDING is
+        reported with both file names and the sequence number; neither file is
+        preferred, and the finding does not change the exit code (§6.7, §10.5)
 run:    sh validator/evp-verify vectors/08-two-writers/pkg
 exit:   0
-requirements exercised: EV-18, EV-39, EV-40
+must print:
+  - "two record stream files disagree about stream 'note' at seq 1"
+  - "records-a.jsonl and records-b.jsonl"
+requirements exercised: EV-18, EV-40, EV-72
+what this does NOT exercise: EV-39 (two writers MUST NOT be merged into one stream). No validator can
+        see a merge that already happened: it checks each file independently and declines to merge
+        them, which is a property of the verifier, not a check on the producer. The producer-side
+        half of EV-39 is a requirement on the emitter and is out of reach here — an earlier version of
+        this file claimed EV-39 and that claim was not true.

@@ -1,0 +1,10 @@
+vector: 24-duplicate-file-entry
+what:   notes.md is listed twice in files[] and counts.files agrees with the
+        three entries. §4.4 requires every file to appear EXACTLY once; a record
+        stream file listed twice was caught only by accident (counts.records), and
+        any other role was not caught at all
+run:    sh validator/evp-verify vectors/24-duplicate-file-entry/pkg
+exit:   1
+must print:
+  - "appears more than once in files[]"
+requirements exercised: EV-19

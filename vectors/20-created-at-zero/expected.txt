@@ -1,0 +1,9 @@
+vector: 20-created-at-zero
+what:   created_at is 0. §5.2.4 forbids rendering an absent timestamp as 0: a
+        reader cannot tell "the epoch" from "the producer records none", and the
+        second is the honest answer. null exists for the second
+run:    sh validator/evp-verify vectors/20-created-at-zero/pkg
+exit:   1
+must print:
+  - "created_at is 0"
+requirements exercised: EV-28

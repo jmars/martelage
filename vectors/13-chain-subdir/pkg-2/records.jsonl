@@ -1,0 +1,2 @@
+{"contract":"evp-example-notes","v":1,"kind":"manifest","streams":{"later":{"n":1,"head":"19197768fe645dbc95636c0d216fd8ae089a851da99976b01ae1a2faa660cc8c"}}}
+{"v":1,"kind":"later","stream":"later","seq":1,"id":"later:1","writer":"example","mark":"MEASURED","ts":1700000000,"body":{"event":"started","detail":"first note"},"body_sha":"19197768fe645dbc95636c0d216fd8ae089a851da99976b01ae1a2faa660cc8c","prev":null}

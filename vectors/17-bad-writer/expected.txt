@@ -1,0 +1,10 @@
+vector: 17-bad-writer
+what:   writer is "exa mple": it begins with a letter, so a check that looked at
+        the first character only let it through. §6.2 fixes the whole charset
+        (^[A-Za-z][A-Za-z0-9_.|/-]*$), and a writer name is what the seam rule and
+        the timestamp findings cite — a name with a space in it is not a name
+run:    sh validator/evp-verify vectors/17-bad-writer/pkg
+exit:   1
+must print:
+  - "writer 'exa mple' is not ^[A-Za-z][A-Za-z0-9_.|/-]*$"
+requirements exercised: EV-35

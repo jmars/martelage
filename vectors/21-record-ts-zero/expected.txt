@@ -1,0 +1,10 @@
+vector: 21-record-ts-zero
+what:   a record's ts is 0. The §6.2 table says a writer's epoch is "null where
+        the writer records none. Never 0-rendered: an absent timestamp is not the
+        epoch" — the same rule §5.2.4 states for created_at, applied to the
+        record the validator actually reads per line
+run:    sh validator/evp-verify vectors/21-record-ts-zero/pkg
+exit:   1
+must print:
+  - "ts is 0 — an absent timestamp is not the epoch"
+requirements exercised: EV-28, EV-35

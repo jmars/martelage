@@ -20,8 +20,8 @@ reader cannot credit the weakest layer with the strength of the strongest.
 | file | what it is |
 |---|---|
 | `spec/EVP-0.1.md` | the standard. Every normative requirement carries an identifier (`EV-1` … `EV-81`) so a conformance report can cite it. |
-| `validator/evp-verify` | the reference validator: POSIX shell + `awk`, `sed`, `grep`, `sort`, `cmp`, `sha256sum`. No network, no interpreter beyond those, no keys, no service, no producer. |
-| `vectors/` | twelve hand-made packages with their expected results. Constructed for the standard; none is exported from a producer system. |
+| `validator/evp-verify` | the reference validator: POSIX shell + the set §10.1 names (`awk`, `sed`, `grep`, `cmp`, `sort`, `sha256sum`, `tr`, `cut`, `head`, `tail`, `wc`, `find`, `mktemp`, `rm`, `cat`). No network, no interpreter beyond those, no keys, no service, no producer. |
+| `vectors/` | twenty-five hand-made packages with their expected results. Constructed for the standard; none is exported from a producer system. |
 | `LICENSE` | the licence split: specification text CC BY 4.0, code Apache-2.0. |
 
 The standard is published on its own. It defines concepts — a record envelope, a stream, a package
@@ -62,16 +62,37 @@ same thing, plus the requirement identifiers the case exercises.
 | 05b | `05` without `--anchor-evidence` | the same claim, unarmed | 3 | **3** |
 | 06 | `06-payload-digest-mismatch` | `files[0].sha256` does not match the bytes | 1 | **1** |
 | 07 | `07-scope-vocabulary` | a scope meaning word outside the vocabulary | 1 | **1** |
-| 08 | `08-two-writers` | two writers, two files, never merged | 0 | **0** |
+| 08 | `08-two-writers` | two writers, two files, never merged; a disagreement between them is a finding | 0 + 1 finding | **0 + 1 finding** |
 | 09 | `09-torn-tail` | a final line with no terminating newline | 1 | **1** |
 | 10 | `10-chain` + `--prev-package pkg-1` | a package that extends its predecessor | 0 | **0** |
 | 10b | `10` without `--prev-package` | the same package, chain unarmed | 0 | **0** |
 | 11 | `11-chain-omission` + `--prev-package pkg-1` | a record dropped across packages | 1 | **1** |
 | 11b | `11` without `--prev-package` | the omission, unarmed — invisible | 0 | **0** |
 | 12 | `12-seam-findings` | two files disagreeing about one stream, and a backwards timestamp | 0 + 2 findings | **0 + 2 findings** |
+| 13 | `13-chain-subdir` + `--prev-package pkg-1` | the predecessor keeps its records one directory down and the successor drops that stream | 1 | **1** |
+| 13b | `13` without `--prev-package` | the same omission, chain unarmed — invisible | 0 | **0** |
+| 14 | `14-manifest-whitespace` | `"v": 1` — one space between tokens | 1 | **1** |
+| 15 | `15-manifest-duplicate-key` | the same key twice in one object | 1 | **1** |
+| 16 | `16-nul-in-record` | a NUL byte inside a record body, every digest correct | 1 | **1** |
+| 17 | `17-bad-writer` | `writer` outside its charset (`exa mple`) | 1 | **1** |
+| 18 | `18-bad-stream-name` | `stream` outside its charset (`no te`) | 1 | **1** |
+| 19 | `19-subject-path` | `subject.id` shaped like a filesystem path | 1 | **1** |
+| 20 | `20-created-at-zero` | `created_at` rendered as `0` for absent | 1 | **1** |
+| 21 | `21-record-ts-zero` | a record `ts` of `0` | 1 | **1** |
+| 22 | `22-claim-when-unanchored` | `anchored:false` carrying a claim object | 1 | **1** |
+| 23 | `23-claim-carries-digest` + `--anchor-evidence` | a claim value that is a bare 64-hex digest | 1 | **1** |
+| 23b | `23` without `--anchor-evidence` | the same package: refused, and undecided as well | 1 | **1** |
+| 24 | `24-duplicate-file-entry` | one file listed twice in `files[]` | 1 | **1** |
+| 25 | `25-unknown-fields` | two keys this standard does not define | 0 | **0** |
 
 11b is the residual of §7.4.3 in one line: without the predecessor, a dropped record is invisible,
 and the validator says the layer was not armed rather than implying a pass.
+
+Vectors 13–25 were added after a review of this repository found requirements the text specified and
+the reference validator did not enforce. Each one is a package built to trip exactly one of those
+checks, and each has a mutant of the validator that removes exactly that check and shows the vector
+going to the wrong verdict — see "each new check has a mutant" below. A check with no vector and no
+mutant is a claim, not a check.
 
 ## The validator can fail — a mutation of itself
 
@@ -99,11 +120,41 @@ exit=0
 mutation removes that check and nothing else. Vector 02 was built for exactly this: seq, count, head
 and every digest are consistent, so the `prev` comparison is the only check that can catch it.
 
+### Each new check has a mutant
+
+Same method, one mutant per check added by the review: remove exactly the lines that implement the
+check, leave the rest of the validator alone (`sh -n` clean), and run the vector built for it. A
+check whose removal changes nothing is not load-bearing.
+
+| check removed from a copy of the validator | vector | fixed | mutant |
+|---|---|---|---|
+| the undecided block is printed | 04 | names the missing input | **silent (still exit 3)** |
+| the predecessor's records come from its manifest | 13 | 1 | **0** |
+| no whitespace outside a string value | 14 | 1 | **0** |
+| no duplicate key | 15 | 1 | **0** |
+| NUL/control bytes refused in a record stream file | 16 | 1 | **0** |
+| the whole `writer` charset | 17 | 1 | **0** |
+| the whole `stream` charset | 18 | 1 | **0** |
+| `subject.id` path shape | 19 | 1 | **0** |
+| `created_at` is not `0` | 20 | 1 | **0** |
+| a record `ts` is not `0` | 21 | 1 | **0** |
+| ignored fields are counted and reported | 25 | names `x-custom` | **silent** |
+| `claim` is null when `anchored` is false | 22 | 1 | **0** |
+| a claim value may not be a bare digest | 23 | 1 | **0** |
+| a file appears exactly once in `files[]` | 24 | 1 | **0** |
+
+Two of these are the difference between a report that names what it could not check and one that does
+not: the first row is vector 04's own "must print" line, and vector 23b shows the harder case — a
+package that is refused *and* undecided reports exit 1, and still names the input it could not
+check, because a refusal must not make an undecided check invisible (EV-71).
+
 ## The validator runs on a second shell and a second awk
 
 The whole vector suite above was re-run under `busybox sh` with `busybox awk`, `sed`, `grep`, `cmp`
 and `sha256sum` — a different shell and a different awk implementation from the ones used for the
-table — and every exit code and every finding was identical. That is what "POSIX shell and
+table — and every exit code and every finding was identical. The run was repeated for the thirteen
+vectors added by the review, with the same result: 30 of 30 invocations, same exit code, same
+findings, same must-print lines. That is what "POSIX shell and
 coreutils" is supposed to mean, so it was measured rather than asserted.
 
 ## A producer that shares no code with the validator
