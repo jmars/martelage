@@ -54,7 +54,9 @@ PY
 for v in 34-seal-verified 35-seal-digest-moved 36-anchor-untrusted 37-self-seal \
          38-no-timestamp 39-container-malformed 40-signer-expired 41-signature-broken \
          42-multisigner-operator 43-ca-signer 44-chain-expired 45-tsa-expired \
-         46-zip-duplicate 47-manifest-path-escape; do
+         46-zip-duplicate 47-manifest-path-escape \
+         48-embedded-content 49-revocation-revoked 50-revocation-clean \
+         51-revocation-wrong-issuer 52-revocation-expired; do
 	rm -rf "vectors/$v/pkg" "vectors/$v/pkg-moved"
 	rm -f "vectors/$v"/*.asice
 done
@@ -206,5 +208,33 @@ $mk --package vectors/47-manifest-path-escape/pkg \
 	--signer $pki/signerA.crt.pem --key $pki/signerA.key.pem --chain $pki/intermediateA.crt.pem \
 	--manifest-entry ../outside.txt=vectors/47-manifest-path-escape/outside.txt \
 	--timestamp --out vectors/47-manifest-path-escape/seal-path-escape.asice
+
+# ── 48: a signature whose content is EMBEDDED, not detached ─────────────
+# The same package, the same signer, the same timestamp as vector 34. One flag
+# (`-nodetach`, via mkasic.py --embedded-content) puts the content INSIDE the
+# CMS instead of leaving it detached over META-INF/manifest.xml — so the seal no
+# longer presents the manifest as external content and the construction is not
+# the one validator/p3-verify implements. seal-detached.asice is the control:
+# the same build without that one flag.
+mkpkg vectors/48-embedded-content/pkg qualified seal.asice
+$mk --package vectors/48-embedded-content/pkg \
+	--signer $pki/signerA.crt.pem --key $pki/signerA.key.pem --chain $pki/intermediateA.crt.pem \
+	--timestamp --embedded-content --out vectors/48-embedded-content/seal-embedded.asice
+$mk --package vectors/48-embedded-content/pkg \
+	--signer $pki/signerA.crt.pem --key $pki/signerA.key.pem --chain $pki/intermediateA.crt.pem \
+	--timestamp --out vectors/48-embedded-content/seal-detached.asice
+
+# ── 49..52: revocation, from a CRL the verifier is HANDED ───────────────
+# One construction, four arms, and the arms differ only in the revocation
+# material: the signer is revoked, nothing is revoked, the CRL speaks for a
+# different CA, the CRL has expired. The CRLs themselves are built by
+# tools/mkcrl.sh (run by tools/mkpki.sh); nothing here is fetched.
+for v in 49-revocation-revoked 50-revocation-clean 51-revocation-wrong-issuer \
+         52-revocation-expired; do
+	mkpkg "vectors/$v/pkg" qualified seal.asice
+	$mk --package "vectors/$v/pkg" \
+		--signer $pki/signerA.crt.pem --key $pki/signerA.key.pem --chain $pki/intermediateA.crt.pem \
+		--timestamp --out "vectors/$v/seal.asice"
+done
 
 printf 'mkp3.sh: rebuilt the P3 vectors under %s/vectors\n' "$repo"

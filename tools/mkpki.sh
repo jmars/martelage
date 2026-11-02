@@ -14,6 +14,11 @@
 # shipped containers must be rebuilt with tools/mkasic.py if you regenerate.
 #
 #   sh tools/mkpki.sh          # rebuild vectors/pki in place
+#   PKI=/tmp/pki sh tools/mkpki.sh   # build the same PKI somewhere else (how the
+#                                    # fixture pipeline is tested end to end)
+#
+# The CRLs the revocation vectors hand to the verifier are built at the end, by
+# tools/mkcrl.sh, from the certificates this script just made.
 
 set -eu
 LC_ALL=C
@@ -21,7 +26,7 @@ export LC_ALL
 
 here=$(cd -- "$(dirname -- "$0")" && pwd)
 repo=$(cd -- "$here/.." && pwd)
-pki="$repo/vectors/pki"
+pki=${PKI:-$repo/vectors/pki}
 
 OPENSSL=${OPENSSL:-openssl}
 command -v "$OPENSSL" >/dev/null 2>&1 || { printf 'mkpki.sh: no %s on PATH\n' "$OPENSSL" >&2; exit 1; }
@@ -37,7 +42,8 @@ NA_EXPIRED=20210101000000Z
 # a rebuild that silently deleted it would be a rebuild that lost the tree's own
 # account of what the keys are
 rm -rf "$pki/anchors" "$pki/anchors-b"
-rm -f "$pki"/*.crt.pem "$pki"/*.key.pem "$pki"/*.csr "$pki"/*.cnf "$pki"/*.serial
+rm -f "$pki"/*.crt.pem "$pki"/*.key.pem "$pki"/*.csr "$pki"/*.cnf "$pki"/*.serial \
+	"$pki"/*.der "$pki"/*.index "$pki"/*.crlnumber
 mkdir -p "$pki/anchors" "$pki/anchors-b"
 
 cat >"$pki/openssl.cnf" <<'EOF'
@@ -176,6 +182,10 @@ sed -e 's/^serial .*/serial            = tsa-expired.serial/' \
 printf '01\n' >"$pki/tsa-expired.serial"
 
 chmod 644 "$pki"/*.crt.pem "$pki"/*.key.pem "$pki"/*.cnf "$pki"/*.serial "$pki"/anchors/*.crt.pem "$pki"/anchors-b/*.crt.pem
+
+# the CRLs, from the certificates above. Separate script so the shipped ones can
+# be rebuilt without regenerating every key: `sh tools/mkcrl.sh vectors/pki`.
+sh "$here/mkcrl.sh" "$pki" >/dev/null
 
 printf 'mkpki.sh: built %s\n' "$pki"
 for f in rootA intermediateA intermediateA-expired signerA signerC signerB expired operator tsa tsa-expired rootB; do

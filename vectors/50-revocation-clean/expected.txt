@@ -1,0 +1,53 @@
+vector: 50-revocation-clean
+what:   the armed revocation check that finds nothing. The same container as 49, with
+        the CRLs their CAs issued and no entry in either: every certificate in the
+        established chain is spoken for and none of them is listed. The run's verdict is
+        the unarmed run's verdict — 0 — and the report says revocation WAS checked, and
+        against exactly which CRLs, so "checked and clean" is never the same string as
+        "not checked"
+run:    validator/p3-verify --container vectors/50-revocation-clean/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --revocation vectors/pki/crl-intermediateA-clean.pem \
+          --revocation vectors/pki/crl-rootA-clean.pem \
+          vectors/50-revocation-clean/pkg
+exit:   0
+also:   validator/p3-verify --container vectors/50-revocation-clean/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --revocation vectors/pki/crl-intermediateA-clean.der \
+          --revocation vectors/pki/crl-rootA-clean.pem \
+          vectors/50-revocation-clean/pkg   ->  exit 0
+        the SAME material in the OTHER format: intermediate A's CRL as DER, byte for
+        byte the DER encoding of the PEM file above. --revocation takes a PEM or a DER
+        CRL, and this is the arm that says so
+        validator/p3-verify --container vectors/50-revocation-clean/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/50-revocation-clean/pkg   ->  exit 0
+        UNARMED: the same exit code, and the report's revocation layer says NOT checked.
+        The verdict is unchanged by arming; what changes is whether the report may say
+        revocation was checked
+must print:
+  - "checked CLEAN — 2 certificate(s) in the chain checked against"
+  - "the CRL issued by CN=martelage test intermediate A"
+  - "thisUpdate 2020-01-01 00:00:00Z, nextUpdate 2099-01-01 00:00:00Z, 0 entries"
+  - "no entry lists any of them as revoked"
+  - "p3.8     revocation          checked CLEAN"
+  - "a supplied trust anchor is the trust input"
+  - "NOT checked by any run of this verifier — no CRL is read, no OCSP responder is contacted"
+        (on the UNARMED arm, NOT on the armed one)
+requirements exercised: MA-64, MA-70, MA-71
+why it fails without the fix: MEASURED. The pre-fix verifier exits 2 on this invocation
+        ("unknown option --revocation"): the armed check does not exist. And the
+        discipline this vector pins is the one the previous review found broken for the
+        signer set — an unarmed check that reads as a pass: with the ARMED report text
+        wired to the unarmed state (the layer keyed off nothing), the run still exits 0
+        while printing the unarmed sentence, and the two states become
+        indistinguishable. The must-print pair above is the difference: on this arm
+        "checked CLEAN …" is present and the unarmed sentence is NOT, and on the
+        unarmed arm exactly the reverse
+what this vector does NOT claim: that the certificates were revoked at no time, or that
+        no later CRL lists them. A CRL speaks from its thisUpdate to its nextUpdate; a
+        revocation published after it is invisible here, and the report's not-checkable
+        block says so on every armed run

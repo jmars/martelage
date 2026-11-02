@@ -1,0 +1,67 @@
+vector: 49-revocation-revoked
+what:   the sealer's certificate is on a CRL the verifier is HANDED. The container, the
+        package, the signer, the timestamp and the trust anchors are vector 34's; the
+        only new input is --revocation, twice: the CRL intermediate A issued (the CA
+        that issued the seal's certificate) and the CRL root A issued (the CA that
+        issued intermediate A, so the intermediate is spoken for too). The first lists
+        the sealer's serial as revoked with a date and a reason, and revocation
+        material the verifier was given refutes the seal it made
+run:    validator/p3-verify --container vectors/49-revocation-revoked/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --revocation vectors/pki/crl-intermediateA-revoked.pem \
+          --revocation vectors/pki/crl-rootA-clean.pem \
+          vectors/49-revocation-revoked/pkg
+exit:   1
+also:   validator/p3-verify --container vectors/49-revocation-revoked/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --revocation vectors/pki/crl-intermediateA-clean.pem \
+          --revocation vectors/pki/crl-rootA-clean.pem \
+          vectors/49-revocation-revoked/pkg   ->  exit 0
+        the CONTROL: the same container, the same two CAs, the same windows — the CRL
+        from intermediate A simply carries no entry. One line in the CRL's index, and
+        nothing else, decides 1 against 0
+        validator/p3-verify --container vectors/49-revocation-revoked/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/49-revocation-revoked/pkg   ->  exit 0
+        and WITHOUT --revocation the run is unchanged from before this option existed:
+        revocation is NOT checked and the report says so (row 34's wording)
+must print:
+  - "is REVOKED"
+  - "lists serial 0a11 as revoked with a revocation date of 2021-06-01 12:00:00Z"
+  - "the reason Key Compromise"
+  - "Revocation material the verifier was given says this certificate was revoked"
+  - "REVOKED by vectors/pki/crl-intermediateA-revoked.pem"
+  - "p3.8     revocation          REFUSED — see refusals"
+  - "checked CLEAN"                          (on the control run, NOT on this one)
+requirements exercised: MA-64, MA-70
+why it fails without the fix: MEASURED. The pre-fix verifier has no --revocation option
+        at all, so this invocation ends at exit 2 "unknown option --revocation" — the
+        input cannot be expressed, and revocation is reported unarmed on every run. With
+        the option added and the CRL entry comparison removed (one line), this container
+        reports exit 0 CONFORMANT with the revocation layer reading "checked CLEAN",
+        while vector 34 still reports 0: the entry comparison is the only thing that
+        turns this container from CONFORMANT to refused.
+openssl: every one of these is run by the verifier on the supplied file — nothing is
+        fetched, and no responder is contacted:
+          $ openssl crl -in crl-intermediateA-revoked.pem -noout -text
+            Certificate Revocation List (CRL):
+                    Issuer: CN=martelage test intermediate A, O=martelage test PKI (...) 
+                    Last Update: Jan  1 00:00:00 2020 GMT
+                    Next Update: Jan  1 00:00:00 2099 GMT
+            Revoked Certificates:
+                Serial Number: 0A11
+                    Revocation Date: Jun  1 12:00:00 2021 GMT
+                    CRL entry extensions:
+                        X509v3 CRL Reason Code:
+                            Key Compromise
+          $ openssl crl -in crl-intermediateA-revoked.pem -CAfile intermediateA.crt.pem \
+              -verify -noout
+            verify OK
+        The first is how the issuer, the window, the entry count and the entry itself are
+        read; the second is how the CRL's own signature is established before anything
+        it says is used. A CRL whose signature does not verify is reported UNUSABLE and
+        no certificate is reported as checked against it (vector 52's mechanism, one
+        axis over)

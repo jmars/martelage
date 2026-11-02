@@ -368,8 +368,10 @@ exit code <code>3</code> and still names the profile-specific verifier it is not
 changed and is not going to, because §9.1(b) keeps keys and trust anchors out of the base tier. The
 verifier it names is <code>validator/p3-verify</code>: a second implementation that shares no code with
 <code>martelage-verify</code>, runs under <code>python3</code> and calls the <code>openssl</code>
-binary for every cryptographic operation. It reads no CRL, contacts no OCSP responder, and has no
-network path at all.</p>
+binary for every cryptographic operation. It has no network path at all: it never downloads anything,
+never opens a URL, and never contacts an OCSP responder. Revocation is checked only against CRLs the
+person running it hands it with <code>--revocation</code>; without that option revocation is not
+checked and the report says so.</p>
 
 <pre><code>validator/p3-verify \
   --container vectors/34-seal-verified/seal.asice \
@@ -378,10 +380,24 @@ network path at all.</p>
   vectors/34-seal-verified/pkg                      # exit 0</code></pre>
 
 <p>It takes the container and the anchors on the verifier's side, as §10.2 (MA-69) says a P3 input
-must be, plus one input of its own: <code>--operator-cert</code>, the operator's certificate. Without
-that certificate the "legal person <em>other than the operator</em>" clause cannot be checked, so the
-run reports <code>3</code> for that clause and says the input is missing. It never assumes the signer
-is someone else — which is why no P3 run reaches exit <code>0</code> without it.</p>
+must be, plus two inputs of its own: <code>--operator-cert</code>, the operator's certificate, and
+optionally <code>--revocation</code>, a CRL to check revocation against. Without the operator
+certificate the "legal person <em>other than the operator</em>" clause cannot be checked, so the run
+reports <code>3</code> for that clause and says the input is missing. It never assumes the signer is
+someone else — which is why no P3 run reaches exit <code>0</code> without it.</p>
+
+<p><strong>What <code>--revocation</code> takes, and what it establishes.</strong> A CRL, PEM or DER,
+read from a file the verifier was given; repeat it once per CA in the chain, because a CRL speaks only
+for the certificates its own issuer signed. With it the verifier checks its own signature against a
+certificate the run holds, checks that its window (<code>thisUpdate</code> … <code>nextUpdate</code>)
+contains now, and checks every certificate in the established chain that the CRL speaks for: a listed
+certificate <strong>refuses</strong> the container and the report names the certificate, the CRL, the
+revocation date and the reason. A certificate no supplied CRL speaks for is reported as <em>not
+checked</em> and makes the run <code>3</code> — never "not revoked". A CRL that has expired, is not
+yet valid, or whose signature does not verify is reported unusable and the run does not claim
+revocation was checked. What remains uncheckable is said in the same breath: OCSP is not implemented at all — not even a
+supplied OCSP response is read — no CRL is ever downloaded, a revocation published after a CRL's
+<code>nextUpdate</code> is invisible, and long-term validation is still never validated.</p>
 
 <p><strong>The clause is checked over the whole signer set.</strong> A signature entry may carry more
 than one signer, and the operator only has to be one of them. The verifier enumerates <em>every</em>
@@ -405,21 +421,28 @@ chain, all held to the time the verified token establishes and never to this hos
 <tbody>
 <tr>
 <td><code>0</code></td>
-<td><strong>CONFORMANT</strong> — the container is well-formed (no duplicate entry name, every
+<td><strong>CONFORMANT</strong> — the signature entry is the construction this verifier implements (a
+detached CAdES over the manifest), the container is well-formed (no duplicate entry name, every
 covered path inside the package), the CAdES signature verifies over the ASiC manifest, <em>every</em>
 signer of <em>every</em> signature entry chains to a supplied anchor and none of them is a CA, every
 sealed digest is the package's, the RFC 3161 token verified, every certificate the run established —
-every signer, the whole chain, the TSA's own chain — was valid at the claimed time, and no signer's key
-is the operator's.</td>
+every signer, the whole chain, the TSA's own chain — was valid at the claimed time, no signer's key is
+the operator's, and — <em>only if <code>--revocation</code> was given</em> — every certificate a
+supplied CRL speaks for is absent from it. Revocation unarmed is not part of this verdict and is
+reported as unarmed.</td>
 </tr>
 <tr>
 <td><code>1</code></td>
-<td><strong>NON-CONFORMANT</strong> — a malformed container (a wrong <code>mimetype</code>, a
-duplicate ZIP entry name, a covered path that leaves the package, an entry the manifest lists and the
-ZIP does not hold, a sealed digest that no longer matches the file on disk), a signature that does not
-verify, a signer certificate that is a CA, any signer or chain certificate that was not valid at the
-claimed time, a token from a timestamping authority that was not, a seal made with the operator's own
-key <em>or co-signed with it</em>, or <code>--require-timestamp</code> given with no token.</td>
+<td><strong>NON-CONFORMANT</strong> — a signature entry whose content is <strong>embedded</strong>
+rather than detached over the manifest: a shape this verifier does not implement, refused by name
+before anything else is accused, together with the EN 319 162-1 concatenated-digest form and XAdES; a
+malformed container (a wrong <code>mimetype</code>, a duplicate ZIP entry name, a covered path that
+leaves the package, an entry the manifest lists and the ZIP does not hold, a sealed digest that no
+longer matches the file on disk), a signature that does not verify, a signer certificate that is a CA,
+any signer or chain certificate that was not valid at the claimed time, a token from a timestamping
+authority that was not, a seal made with the operator's own key <em>or co-signed with it</em>, a
+certificate a supplied CRL lists as revoked, or <code>--require-timestamp</code> given with no
+token.</td>
 </tr>
 <tr>
 <td><code>2</code></td>
@@ -428,10 +451,13 @@ does not claim P3 at all (that package is the base validator's).</td>
 </tr>
 <tr>
 <td><code>3</code></td>
-<td><strong>CANNOT DECIDE</strong> — an input was not supplied: the container, trust anchors,
-<code>--operator-cert</code>, or a verified timestamp to establish the claimed time. A signature that
-verifies but reaches no supplied anchor is <em>this</em> code, not a refusal: the verifier was not
-given the anchor that decides it (§9.5 MA-66).</td>
+<td><strong>CANNOT DECIDE</strong> — an input was not supplied or cannot be used: the container,
+trust anchors, <code>--operator-cert</code>, a verified timestamp to establish the claimed time, or
+revocation material that has expired, is not yet valid, whose signature does not verify, or that
+speaks for only part of the chain. A signature that verifies but reaches no supplied anchor is
+<em>this</em> code, not a refusal: the verifier was not given the anchor that decides it (§9.5
+MA-66). So is a certificate no supplied CRL speaks for: "nothing said" is not "nothing
+revoked".</td>
 </tr>
 </tbody>
 </table>
@@ -440,9 +466,13 @@ given the anchor that decides it (§9.5 MA-66).</td>
 <p><strong>What it still cannot check, on every run.</strong> The verifier prints a section headed
 <code>not checkable by this verifier (every run)</code> before its verdict — and prints it to stderr on
 an exit-<code>2</code> run as well, so "on every run" is true of the runs that have no report — and the
-list below is that section's content: <strong>revocation</strong> — no CRL is read and no OCSP
-responder is contacted, so "valid at the claimed time" means the certificate dates and never
-revocation status; <strong>long-term validation</strong> — LTV material is reported present or absent
+list below is that section's content, and it is printed in the state the run is actually in:
+<strong>revocation</strong> — unarmed, the entry says no CRL is read and no OCSP responder is
+contacted, so "valid at the claimed time" means the certificate dates and never revocation status;
+armed with <code>--revocation</code>, it says exactly which CRLs were used, with their issuer,
+<code>thisUpdate</code>, <code>nextUpdate</code> and entry count, that a certificate no supplied CRL
+speaks for has no revocation status here, and that a revocation published after a CRL's
+<code>nextUpdate</code> is invisible; <strong>long-term validation</strong> — LTV material is reported present or absent
 and never validated; the <strong>truth and completeness</strong> of the records, which is limit (iii)
 below and is kept distinct from the residual of §3.3; the <strong>signer's legal identity</strong>
 beyond the subject its certificate claims; whether the certificate was <strong>issued for
@@ -458,7 +488,12 @@ a claim of compliance with ETSI EN 319 162-1. The container shape it verifies is
 manifest-signature form — a detached CAdES over <code>META-INF/manifest.xml</code>, carrying the
 covered files' digests in that manifest — and the tool says so in its own report, because the EN 319
 162-1 multi-file concatenated-digest form is not what it parses and it will not report that as
-verified. It does not verify XAdES. It does not make the base validator verify seals, and it does not
+verified. A container of another shape is <strong>refused</strong> rather than absorbed: an
+embedded-content CMS, the concatenated-digest form and XAdES are all shapes this verifier does not
+implement, and a run that meets one says which shape it met instead of reporting it as a detached
+signature it is not. It does not verify XAdES. It is not a revocation service either:
+<code>--revocation</code> checks the CRLs it is handed and nothing else — no live OCSP, no CRL
+download, no long-term validation. It does not make the base validator verify seals, and it does not
 change the base tier's tool list (§10.1 MA-68).</p>
 
 <p>The fixtures are a <strong>throwaway</strong> test PKI under <code>vectors/pki/</code> — two roots,
@@ -470,10 +505,17 @@ from what is in the tree is not reproducible. The dates are fixed with
 <code>-not_before</code>/<code>-not_after</code>, so the expired-signer, expired-intermediate and
 expired-TSA vectors are expired on any host at any time; the keys are regenerated on each run, so
 <code>sh tools/mkpki.sh &amp;&amp; sh tools/mkp3.sh</code> rebuilds the PKI and the containers together.
-Both run offline. Fourteen vectors (34–47) cover this profile, each with an arm that passes and an arm
-that fails, differing by one thing: a digest that moved, an anchor that is withheld, an operator that
-sealed, an operator that <em>co-signed</em>, a CA used as the sealing party, an intermediate or a TSA
-that expired, a ZIP entry name that appears twice, and a covered path that leaves the package.</p>
+The CRLs those vectors hand the verifier are built by <code>tools/mkcrl.sh</code> — one per CA in the
+chain, plus a revoked entry, a window that ended in 2021 and a CRL from a CA that issued nothing in the
+chain — so <code>sh tools/mkpki.sh &amp;&amp; sh tools/mkcrl.sh &amp;&amp; sh tools/mkp3.sh</code>
+rebuilds the PKI, the CRLs and the containers together. All three run offline.
+
+Nineteen vectors (34–52) cover this profile, each with an arm that passes and an arm that fails,
+differing by one thing: a digest that moved, an anchor that is withheld, an operator that sealed, an
+operator that <em>co-signed</em>, a CA used as the sealing party, an intermediate or a TSA that
+expired, a ZIP entry name that appears twice, a covered path that leaves the package, a signature whose
+content is embedded instead of detached, a sealer on a CRL, a CRL that lists nobody, a CRL from
+another CA, and a CRL that has expired.</p>
 
 <p>§9.3 requires three limits to be stated wherever P3 is offered. They are the profile's terms, not
 its small print:</p>
@@ -534,9 +576,9 @@ operator who rewrote everything before the first anchor it proves nothing.</p>
 <section id="evidence">
 <h2>Where the evidence lives</h2>
 
-<p>The repository ships forty-seven hand-made packages under <code>vectors/</code>, each with an
+<p>The repository ships fifty-two hand-made packages under <code>vectors/</code>, each with an
 <code>expected.txt</code> recording the run, the expected exit code, the literal lines it must print,
-and the <code>MA-</code> identifiers the case exercises (MEASURED: 33 directories, 33
+and the <code>MA-</code> identifiers the case exercises (MEASURED: 52 directories, 52
 <code>expected.txt</code> files). None of them is exported from a producer system; they were
 constructed for the standard (<a href="../README.md"><code>README.md</code></a>).</p>
 

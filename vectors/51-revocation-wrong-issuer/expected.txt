@@ -1,0 +1,47 @@
+vector: 51-revocation-wrong-issuer
+what:   a CRL that is perfectly valid and speaks for a different CA. The container is
+        sealed under test root A's hierarchy (signer -> intermediate A -> root A), and
+        the revocation material supplied is root B's CRL: its signature verifies, its
+        window is current, it names no revocation at all — and it speaks for none of the
+        certificates in this chain, because root B issued none of them. "Nothing revoked"
+        and "nothing said" must not be the same report, so the run says which
+        certificate the material does not speak for and cannot decide
+run:    validator/p3-verify --container vectors/51-revocation-wrong-issuer/seal.asice \
+          --trust-anchors vectors/pki/anchors-b \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --revocation vectors/pki/crl-rootB-clean.pem \
+          vectors/51-revocation-wrong-issuer/pkg
+exit:   3
+also:   validator/p3-verify --container vectors/51-revocation-wrong-issuer/seal.asice \
+          --trust-anchors vectors/pki/anchors-b \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --revocation vectors/pki/crl-intermediateA-clean.pem \
+          --revocation vectors/pki/crl-rootA-clean.pem \
+          vectors/51-revocation-wrong-issuer/pkg   ->  exit 0
+        the CONTROL: the same container and the same anchors-b directory, with the CRLs
+        of the CAs that actually issued these certificates. One input file differs, and
+        the run goes from undecidable to checked clean. anchors-b is used in both arms
+        because it holds root B as well, which is what lets the wrong-issuer CRL's own
+        signature verify: the arm must fail on COVERAGE, not on an unreadable file
+must print:
+  - "the supplied revocation material does not speak for"
+  - "was issued by CN=martelage test root A"
+  - "the usable material was issued by CN=martelage test root B"
+  - "Its revocation status is NOT checked, and this is not a statement that it is unrevoked"
+  - "NOT spoken for by the supplied material"
+  - "checked 0 of 2 certificate(s) in the chain"
+  - "CANNOT DECIDE"
+  - "checked CLEAN"                       (on the control run, NOT on this one)
+requirements exercised: MA-64, MA-70, MA-71
+why it fails without the fix: MEASURED. The pre-fix verifier exits 2 ("unknown option
+        --revocation"). With the option added and the coverage test removed — matching
+        every chain certificate against the CRL's entry list without asking whether that
+        CRL's issuer issued the certificate — this container reports exit 0 CONFORMANT
+        and "checked CLEAN", because a CRL with no entries lists nothing: the absence of
+        an entry in a CRL that covers nothing reads as a clean bill of health. That is
+        the whole failure this vector exists for, and the pre-fix exit code cannot show
+        it because the input cannot be expressed at all
+what this vector does NOT claim: that a CRL from another CA is worthless. It is worth
+        exactly what it covers — the certificates that CA issued — and this run holds
+        none of them, which is why the honest answer is undecidable rather than either
+        a pass or a refusal

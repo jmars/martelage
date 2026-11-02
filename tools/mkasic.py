@@ -126,6 +126,11 @@ def main(argv=None):
                     help="write a ZIP entry named NAME carrying FILE's bytes BEFORE the package files, so the "
                          "container holds two entries of that name with different bytes")
     ap.add_argument("--timestamp", action="store_true", help="add an RFC 3161 token over the signature")
+    ap.add_argument("--embedded-content", action="store_true",
+                    help="sign with the content EMBEDDED in the CMS (-nodetach) instead of detached over "
+                         "META-INF/manifest.xml. This is a shape p3-verify does not implement, so a vector built "
+                         "with it exists to show the verifier refusing the construction by name rather than "
+                         "blaming the chain")
     ap.add_argument("--pki", default=None, help="the test PKI directory (default: vectors/pki)")
     ap.add_argument("--break-mimetype", default=None, help="write this string as the mimetype instead of the correct one")
     ap.add_argument("--drop-entry", action="append", default=[], help="do not add this ZIP entry although the manifest lists it")
@@ -163,6 +168,10 @@ def main(argv=None):
     cmd = ["openssl", "cms", "-sign", "-binary", "-in", manifest_path,
            "-signer", args.signer, "-inkey", args.key, "-md", "sha256",
            "-outform", "DER", "-cades", "-out", sig_path]
+    if args.embedded_content:
+        # the CMS carries its content instead of leaving it detached: the
+        # signature no longer names META-INF/manifest.xml as external content
+        cmd += ["-nodetach"]
     if args.chain:
         cmd += ["-certfile", args.chain]
     for pair in args.co_signer:

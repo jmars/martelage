@@ -1,0 +1,69 @@
+vector: 48-embedded-content
+what:   the signature entry's content is EMBEDDED in the CMS instead of detached over
+        META-INF/manifest.xml. seal-embedded.asice is built with `openssl cms -sign ...
+        -nodetach` (tools/mkasic.py --embedded-content): the same package, the same
+        signer and the same timestamp as seal-detached.asice, one flag apart. The
+        container is a well-formed ASiC-E by every structural check — mimetype,
+        manifest, coverage, entry digests — and the seal inside it is genuine. What it
+        is not is the construction this verifier implements: the seal carries its own
+        content, so it never presents the manifest as external content, and nothing in
+        the container tells this verifier what the signature covers
+run:    validator/p3-verify --container vectors/48-embedded-content/seal-embedded.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/48-embedded-content/pkg
+exit:   1
+also:   validator/p3-verify --container vectors/48-embedded-content/seal-detached.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/48-embedded-content/pkg   ->  exit 0
+        the CONTROL: the same build without -nodetach — same package, same signer, same
+        timestamp, same trust anchors. The seal is detached over the manifest and the
+        run reports the detached construction and CONFORMANT
+must print:
+  - "is not the construction this verifier implements"
+  - "carries its content EMBEDDED"
+  - "openssl cms -sign ... -nodetach"
+  - "cannot establish what the signature covers"
+  - "The SHAPE is refused rather than reported undecidable"
+  - "multi-file concatenated-digest form and XAdES are likewise not implemented"
+  - "CAdES, EMBEDDED content, DER"
+  - "construction EMBEDDED-content CAdES"
+  - "construction detached CAdES over the exact bytes of META-INF/manifest.xml"
+        (on the control run, NOT on this one)
+  - "CAdES, detached, DER"                                          (on the control run)
+requirements exercised: MA-64, MA-70
+why it fails without the fix: MEASURED, and the asymmetry is 0 against 1, not a
+        wording change. On the pre-fix verifier this container reports exit 0
+        CONFORMANT, with the report asserting "signature META-INF/signatures.p7s
+        (2680 bytes, CAdES, detached, DER)" and "construction detached CAdES over the
+        exact bytes of META-INF/manifest.xml — the manifest-signature form" — two
+        statements about a construction the run never read. openssl happens to compare
+        a supplied -content against the encapsulated content, so the signature was in
+        fact checked over those bytes; but that is an openssl behaviour the tool relied
+        on silently and never stated, and a container of a shape this verifier does not
+        implement read as one it had verified. The control (detached) reports exit 0 on
+        both tools, which is what makes this a refusal of the shape and not a
+        tightening of the seal check.
+openssl: the construction is read from the entry's own SignedData, before any content,
+        chain or date question:
+          $ openssl cms -cmsout -inform DER -in signatures.p7s -print
+            encapContentInfo:
+              eContentType: pkcs7-data (1.2.840.113549.1.7.1)
+              eContent: <ABSENT>                     <- detached, the form implemented
+          $ openssl cms -sign -binary -in META-INF/manifest.xml -signer ... -nodetach
+            encapContentInfo:
+              eContentType: pkcs7-data (1.2.840.113549.1.7.1)
+              eContent:                              <- EMBEDDED
+                0000 - 3c 3f 78 6d 6c 20 76 65...   <?xml ve
+        The same containers, one flag apart, measured on this tree:
+          embedded -> exit 1, "is not the construction this verifier implements"
+          detached -> exit 0, "construction detached CAdES ... the manifest-signature form"
+what this vector does NOT claim: that a container with embedded content is evidence of
+        nothing. Its seal covers real bytes and the pre-fix tool verified them. What is
+        claimed is narrower and is the whole of what the tool can establish: the
+        construction is not the one this verifier implements, so no signature, digest,
+        chain or date is reported as checked for it, and the claim that this container
+        is the P3 evidence is refused rather than left undecided. ETSI EN 319 162-1's
+        multi-file concatenated-digest form and XAdES are equally unimplemented, and
+        this refusal names them for the same reason

@@ -1,0 +1,43 @@
+vector: 52-revocation-expired
+what:   a CRL whose nextUpdate is in 2021, forever. It is intermediate A's CRL, its
+        signature verifies, and it is the sibling of vector 50's clean CRL: same issuer,
+        same key, same serial, same zero entries — only the window differs, and the
+        window ended before any run of this verifier will ever happen. A CRL that is not
+        current cannot say what is revoked now, so it is reported UNUSABLE and the run
+        does not claim revocation was checked. The signer is left unspoken-for, which is
+        said in the same breath
+run:    validator/p3-verify --container vectors/52-revocation-expired/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --revocation vectors/pki/crl-intermediateA-expired.pem \
+          --revocation vectors/pki/crl-rootA-clean.pem \
+          vectors/52-revocation-expired/pkg
+exit:   3
+also:   validator/p3-verify --container vectors/52-revocation-expired/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --revocation vectors/pki/crl-intermediateA-clean.pem \
+          --revocation vectors/pki/crl-rootA-clean.pem \
+          vectors/52-revocation-expired/pkg   ->  exit 0
+        the CONTROL: the same two CAs, the same key, the same zero entries — the current
+        CRL instead of the expired one. One field (nextUpdate) differs, and the run goes
+        from undecidable to checked clean
+must print:
+  - "UNUSABLE"
+  - "it is EXPIRED: nextUpdate is 2021-01-01 00:00:00Z"
+  - "so it speaks only about revocations before its nextUpdate and nothing about now"
+  - "the supplied CRL vectors/pki/crl-intermediateA-expired.pem is unusable"
+  - "checked 1 of 2 certificate(s) in the chain"
+  - "CANNOT DECIDE"
+  - "checked CLEAN"                          (on the control run, NOT on this one)
+requirements exercised: MA-64, MA-70, MA-71
+why it fails without the fix: MEASURED. The pre-fix verifier exits 2 ("unknown option
+        --revocation"). With the option added and the window test removed — the CRL
+        parsed, its signature verified, its (empty) entry list used — this container
+        reports exit 0 CONFORMANT and "checked CLEAN": a CRL that expired five years ago
+        is read as a current statement that nothing is revoked. The dates are fixed in
+        tools/mkcrl.sh exactly as the certificate dates are fixed in tools/mkpki.sh, so
+        this expiry holds on any host, at any time, without a clock being mocked
+what this vector does NOT claim: that an expired CRL was ever wrong. It was right when
+        it was issued. What it is not is evidence about now, and the run's job is to
+        refuse to convert one into the other

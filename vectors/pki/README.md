@@ -26,6 +26,11 @@
 | `tsa-expired.crt.pem` | the **same key and subject** as `tsa`, window `2020-01-01 .. 2021-01-01`: a token from a TSA that was not valid when it stamped |
 | `tsa.cnf`, `tsa.serial` | the TSA's configuration; `openssl ts -reply` reads the serial from here |
 | `tsa-expired.cnf`, `tsa-expired.serial` | the same configuration pointing at `tsa-expired.crt.pem`: one certificate and one serial file different |
+| `crl-intermediateA-clean.pem` / `.der` | intermediate A's CRL with **no** entries, one in each encoding: the "checked clean" arm, and the arm that says `--revocation` takes PEM or DER |
+| `crl-intermediateA-revoked.pem` | the same CRL with **one** entry: `signerA` (serial `0x0A11`) revoked `2021-06-01`, reason `keyCompromise` — the arm where the supplied material refuses the seal |
+| `crl-intermediateA-expired.pem` | the same CA, same key, **no** entries, window `2020-01-01 .. 2021-01-01`: the CRL whose `nextUpdate` is in the past, on any host at any time |
+| `crl-rootA-clean.pem` | root A's CRL, no entries: the CA that issued intermediate A, so the intermediate is spoken for |
+| `crl-rootB-clean.pem` | root B's CRL, no entries: a perfectly valid CRL from a CA that issued **nothing** in the vectors' chain — the "wrong issuer" arm |
 | `anchors/` | the verifier's trust store: root A. `--trust-anchors vectors/pki/anchors` |
 | `anchors-b/` | root A **and** root B: the same store plus the one file that decides vector 36 |
 
