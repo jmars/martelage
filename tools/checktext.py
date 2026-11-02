@@ -35,9 +35,12 @@ import pdftext as P
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SITE = os.path.join(ROOT, "site")
-PDF = os.path.join(SITE, "martelage-0.1.pdf")
+PDF = os.path.join(SITE, "martelage-0.2.pdf")
 TYP = os.path.join(SITE, "martelage.typ")
-FOOTER = re.compile(r"^MARTELAGE-0\.1 \u2014 draft 0\.1\d+ / \d+$")
+# The running footer of every page, as the artifact prints it. The version is pinned
+# rather than wildcarded on purpose: an artifact compiled from an older .typ carries the
+# older footer, and a wildcard would strip it silently instead of failing the gate.
+FOOTER = re.compile(r"^MARTELAGE-0\.2 \u2014 draft 0\.2\d+ / \d+$")
 
 
 def prose_nodes(node, out, skip=("pre", "head", "title")):
@@ -105,8 +108,44 @@ def reflow(text):
     return out
 
 
+def table_headers(root):
+    """The repeated header row of every table, as the PDF renders it when a table
+    breaks across a page: the header cells' text concatenated.
+
+    A repeated header is page furniture exactly as the footer is — it is inserted by
+    the typesetter at a page boundary, not authored in the prose — so it is removed
+    before a prose node is looked for. Without this, a table that happens to break
+    across a page splits a neighbouring paragraph's text and the gate reports a miss
+    that the artifact does not have.
+    """
+    tables = []
+
+    def collect(node):
+        for child in node.children:
+            if isinstance(child, str):
+                continue
+            if child.tag == "table":
+                tables.append(child)
+            collect(child)
+
+    collect(root)
+    out = set()
+    for table in tables:
+        head = H.find(table, "thead")
+        if head is None:
+            continue
+        row = H.find(head, "tr")
+        if row is None:
+            continue
+        out.add("".join(c.text().strip() for c in row.children if not isinstance(c, str)))
+    return out
+
+
 def main():
     pages = [H.parse(os.path.join(SITE, name)) for name, _ in H.SOURCES]
+    repeated = set()
+    for root in pages:
+        repeated |= table_headers(root)
 
     prose, codes = [], []
     for root in pages:
@@ -115,9 +154,21 @@ def main():
         code_texts(body, codes)
 
     pdf_lines = P.lines(PDF)
-    raw = "\n".join(
-        ln for ln in pdf_lines if ln.strip() and ln != "\f" and not FOOTER.match(ln.strip())
-    )
+    # A table header is authored once and repeated by the typesetter when the table
+    # breaks across a page: the FIRST occurrence is the printed header (and is what the
+    # header cells' own text nodes are matched against), every later one is page
+    # furniture and is removed here.
+    kept, seen_headers = [], set()
+    for ln in pdf_lines:
+        text = ln.strip()
+        if not text or text == "\f" or FOOTER.match(text):
+            continue
+        if text in repeated:
+            if text in seen_headers:
+                continue
+            seen_headers.add(text)
+        kept.append(ln)
+    raw = "\n".join(kept)
     # Continuations we inserted are joined back, so a shipped line is compared as shipped.
     joined = raw.replace("\n" + H.CONTINUATION + " ", " ")
     flat = re.sub(r"\s+", " ", reflow(raw))

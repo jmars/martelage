@@ -4,13 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>Martelage 0.1 — what an evidence package is, and what it does not prove</title>
+<title>Martelage 0.2 — what an evidence package is, and what it does not prove</title>
 <link rel="stylesheet" href="site.css">
 </head>
 <body>
 <header>
 <h1>Martelage — the Evidence Package standard</h1>
-<p>Draft 0.1. A directory format for records, plus one manifest that states the package's scope, its
+<p>Draft 0.2, document identifier <code>martelage 0.2</code>, wire format unchanged at
+<code>"v":1</code>. A directory format for records, plus one manifest that states the package's scope, its
 place in a package chain, and whether anyone other than the producer holds its digest.</p>
 <nav aria-label="Pages">
 <ul>
@@ -207,19 +208,21 @@ sense, an INTERPRETATION, and no clause of the standard depends on it.</p>
 <h2>Status</h2>
 
 <ul>
-<li><strong>Draft 0.1</strong> — published for adoption and criticism; not yet a stable standard. A
+<li><strong>Draft 0.2</strong> — published for adoption and criticism; not yet a stable standard. A
 change to this document's requirements may be breaking while it is a draft; a change to the published
-wire format (<code>"standard":"martelage","v":1</code>) must not be (§11.6 MA-81).</li>
+wire format (<code>"standard":"martelage","v":1</code>) must not be (§11.6 MA-81). The bump from the
+first draft to this one is recorded in §11.7 (MA-83): the verifier surface grew and the wire format did
+not, so a package written for the first draft is a <code>0.2</code> package.</li>
 <li><strong>Every normative requirement carries an identifier</strong>, <code>MA-1</code> …
-<code>MA-82</code>, so a conformance report can cite what it reports as met or unmet; a clause that
-cannot be cited cannot be tested (§0.3 MA-3). MEASURED: all 82 identifiers appear in the
+<code>MA-83</code>, so a conformance report can cite what it reports as met or unmet; a clause that
+cannot be cited cannot be tested (§0.3 MA-3). MEASURED: all 83 identifiers appear in the
 specification.</li>
 <li><strong>Licence split:</strong> the specification text is CC BY 4.0; the reference validator and
 all code in the repository are Apache-2.0 — see <a href="../LICENSE"><code>LICENSE</code></a>.</li>
 <li><strong>Where it lives:</strong> the specification is
 <a href="../spec/MARTELAGE-0.1.md"><code>spec/MARTELAGE-0.1.md</code></a>; the reference validator is
-<code>validator/martelage-verify</code>; the fifty-two test vectors are under <code>vectors/</code>, each
-with an <code>expected.txt</code>.</li>
+<code>validator/martelage-verify</code> and <code>validator/p3-verify</code>; the fifty-eight test
+vectors are under <code>vectors/</code>, each with an <code>expected.txt</code>.</li>
 </ul>
 </section>
 

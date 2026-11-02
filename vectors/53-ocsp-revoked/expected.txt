@@ -1,0 +1,86 @@
+vector: 53-ocsp-revoked
+what:   an OCSP response the verifier is HANDED says the sealer's certificate is revoked. The
+        container, the package, the signer, the timestamp and the trust anchors are vector
+        34's; the only new input is --ocsp-response: a response signed by a responder
+        intermediate A issued for exactly this purpose (delegated, `openssl ocsp -index`,
+        tools/mkocsp.sh), naming serial 0A11 — signerA — as revoked 2021-06-01 for
+        keyCompromise. The intermediate is spoken for by root A's CRL in the same run, so the
+        refusal is decided by the sealer's status and by nothing else
+run:    validator/p3-verify --container vectors/53-ocsp-revoked/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --ocsp-response vectors/pki/ocsp-signerA-revoked.der \
+          --revocation vectors/pki/crl-rootA-clean.pem \
+          vectors/53-ocsp-revoked/pkg
+exit:   1
+also:   validator/p3-verify --container vectors/53-ocsp-revoked/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --ocsp-response vectors/pki/ocsp-signerA-good.der \
+          --revocation vectors/pki/crl-rootA-clean.pem \
+          vectors/53-ocsp-revoked/pkg   ->  exit 0
+        the CONTROL: the same container, the same responder certificate, the same key, the same
+        issuer, the same window and the same zero-entry database — the responder answers "good"
+        instead of "revoked" for that one serial. One status in one response, and nothing else,
+        decides 1 against 0
+        validator/p3-verify --container vectors/53-ocsp-revoked/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/53-ocsp-revoked/pkg   ->  exit 0
+        UNARMED: no revocation material at all. The same exit code as the control, and the
+        report's revocation layer says NOT checked, so "clean" and "not checked" are never the
+        same string
+must print:
+  - "is REVOKED"
+  - "the supplied OCSP response vectors/pki/ocsp-signerA-revoked.der reports serial 0a11 as revoked"
+  - "with a revocation date of 2021-06-01 12:00:00Z"
+  - "the reason keyCompromise"
+  - "responder CN = martelage test OCSP responder, O = martelage test PKI (throwaway)"
+  - "Revocation material the verifier was given says this certificate was revoked"
+  - "REVOKED by vectors/pki/ocsp-signerA-revoked.der"
+  - "p3.8     revocation          REFUSED — see refusals"
+  - "checked CLEAN"                       (on the control run, NOT on this one)
+  - "NOT checked — no revocation material was supplied"   (on the unarmed run, NOT on this one)
+requirements exercised: MA-64, MA-70
+why it fails without the fix: MEASURED. The pre-fix verifier has no --ocsp-response option at
+        all, so this invocation ends at exit 2 "unknown option --ocsp-response" — the input
+        cannot be expressed, and its own docstring says OCSP is "not implemented here at all, not
+        even from a supplied OCSP response". With the option added and the status comparison
+        removed (the entry is read and never consulted), this container reports exit 0
+        CONFORMANT and "checked CLEAN" from root A's CRL, while the response in the same run
+        says the sealer is revoked: revocation material the verifier was handed, read and
+        ignored. Vector 34 (no revocation input) still reports 0 either way, which is what makes
+        this a check and not a tightening
+openssl: every call below is run BY THE VERIFIER on the supplied file. Nothing is fetched, no
+        request is written and no responder is contacted:
+          $ openssl ocsp -respin vectors/pki/ocsp-signerA-revoked.der -resp_text -no_nonce
+            OCSP Response Data:
+                OCSP Response Status: successful (0x0)
+                Responder Id: CN = martelage test OCSP responder, O = martelage test PKI (throwaway)
+                Responses:
+                Certificate ID:
+                  Serial Number: 0A11
+                Cert Status: revoked
+                Revocation Time: Jun  1 12:00:00 2021 GMT
+                Revocation Reason: keyCompromise (0x1)
+                This Update: Jan  1 00:00:00 2020 GMT
+                Next Update: Jan  1 00:00:00 2099 GMT
+          $ openssl ocsp -respin vectors/pki/ocsp-signerA-revoked.der \
+              -issuer vectors/pki/intermediateA.crt.pem \
+              -cert vectors/pki/signerA.crt.pem \
+              -CAfile vectors/pki/anchors/rootA.crt.pem -no_nonce
+            Response verify OK
+            vectors/pki/signerA.crt.pem: revoked
+                This Update: Jan  1 00:00:00 2020 GMT
+                Next Update: Jan  1 00:00:00 2099 GMT
+        The first call is how the response's status, signer, window and each SingleResponse are
+        read. The second is the one that decides anything: it verifies the response's own
+        signature, requires the signer to be the certificate's issuer or a responder that issuer
+        authorised, requires that signer's chain to reach a supplied anchor, and requires the
+        response's CertID to be THIS certificate's — a response about another certificate prints
+        "ERROR: No Status found." and is never counted for this one
+what this vector does NOT claim: that the certificate was revoked at the claimed time, or that no
+        responder would say otherwise later. The response is a statement made inside its own
+        window (2020-01-01 .. 2099-01-01, fixed in tools/mkocsp.sh so it holds on any host at any
+        time); a revocation published after its nextUpdate is invisible here, and the report's
+        not-checkable block says so on every armed run

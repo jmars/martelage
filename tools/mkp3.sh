@@ -56,10 +56,13 @@ for v in 34-seal-verified 35-seal-digest-moved 36-anchor-untrusted 37-self-seal 
          42-multisigner-operator 43-ca-signer 44-chain-expired 45-tsa-expired \
          46-zip-duplicate 47-manifest-path-escape \
          48-embedded-content 49-revocation-revoked 50-revocation-clean \
-         51-revocation-wrong-issuer 52-revocation-expired; do
+         51-revocation-wrong-issuer 52-revocation-expired \
+         53-ocsp-revoked 54-ocsp-good 55-ocsp-expired 56-ocsp-unanchored-responder \
+         57-revocation-dir-partial 58-revocation-dir-garbage; do
 	rm -rf "vectors/$v/pkg" "vectors/$v/pkg-moved"
 	rm -f "vectors/$v"/*.asice
 done
+rm -rf vectors/57-revocation-dir-partial/material vectors/58-revocation-dir-garbage/material
 
 # 34 — a container that verifies fully, with a checked timestamp
 mkpkg vectors/34-seal-verified/pkg qualified seal.asice
@@ -236,5 +239,41 @@ for v in 49-revocation-revoked 50-revocation-clean 51-revocation-wrong-issuer \
 		--signer $pki/signerA.crt.pem --key $pki/signerA.key.pem --chain $pki/intermediateA.crt.pem \
 		--timestamp --out "vectors/$v/seal.asice"
 done
+
+# ── 53..58: revocation from an OCSP response, and from a directory ───────
+# The same construction and the same package as 34 and 49..52. What differs is
+# the revocation material: an OCSP response that reports the sealer revoked,
+# one that reports it good, one whose window ended in 2021, one signed by a
+# responder that chains to nothing, and two directories of mixed material. The
+# responses are built by tools/mkocsp.sh (run by tools/mkpki.sh) with fixed
+# dates; a directory holds COPIES of the files it is meant to hold, because the
+# vector is a directory a verifier is handed, not a list of paths.
+for v in 53-ocsp-revoked 54-ocsp-good 55-ocsp-expired 56-ocsp-unanchored-responder \
+         57-revocation-dir-partial 58-revocation-dir-garbage; do
+	mkpkg "vectors/$v/pkg" qualified seal.asice
+	$mk --package "vectors/$v/pkg" \
+		--signer $pki/signerA.crt.pem --key $pki/signerA.key.pem --chain $pki/intermediateA.crt.pem \
+		--timestamp --out "vectors/$v/seal.asice"
+done
+
+# 57: one CRL that speaks for the intermediate, one OCSP response that speaks for
+# a certificate this chain does not contain. The sealer is left unspoken for.
+mkdir -p vectors/57-revocation-dir-partial/material
+cp $pki/crl-rootA-clean.pem vectors/57-revocation-dir-partial/material/
+cp $pki/ocsp-signerC-good.der vectors/57-revocation-dir-partial/material/
+chmod 644 vectors/57-revocation-dir-partial/material/*
+
+# 58: the material a checking run needs, plus one file that is not revocation
+# material at all — what a well-meaning operator leaves in a directory.
+mkdir -p vectors/58-revocation-dir-garbage/material
+cp $pki/crl-rootA-clean.pem vectors/58-revocation-dir-garbage/material/
+cp $pki/crl-intermediateA-clean.pem vectors/58-revocation-dir-garbage/material/
+chmod 644 vectors/58-revocation-dir-garbage/material/crl-*.pem
+cat >vectors/58-revocation-dir-garbage/material/notes-from-the-operator.txt <<'EOF'
+This file is not revocation material. It is a text file that a well-meaning
+operator left in the directory beside the CRLs, and a verifier that reads every
+file it was handed must say so rather than skip it.
+EOF
+chmod 644 vectors/58-revocation-dir-garbage/material/notes-from-the-operator.txt
 
 printf 'mkp3.sh: rebuilt the P3 vectors under %s/vectors\n' "$repo"

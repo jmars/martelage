@@ -1,0 +1,62 @@
+vector: 55-ocsp-expired
+what:   an OCSP response whose window ended in 2021, forever. It is intermediate A's own
+        delegated responder, the same key, the same "good" answer for the same serial as vector
+        54 — only thisUpdate/nextUpdate differ, and the window closed before any run of this
+        verifier will ever happen. A response that is not current cannot say what is true now, so
+        it is reported UNUSABLE and no certificate is reported as checked against it. The sealer
+        is left unspoken-for, which the run says in the same breath
+run:    validator/p3-verify --container vectors/55-ocsp-expired/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --ocsp-response vectors/pki/ocsp-signerA-expired.der \
+          --revocation vectors/pki/crl-rootA-clean.pem \
+          vectors/55-ocsp-expired/pkg
+exit:   3
+also:   validator/p3-verify --container vectors/55-ocsp-expired/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --ocsp-response vectors/pki/ocsp-signerA-good.der \
+          --revocation vectors/pki/crl-rootA-clean.pem \
+          vectors/55-ocsp-expired/pkg   ->  exit 0
+        the CONTROL: the same responder, the same key, the same serial and the same "good" — the
+        current response instead of the expired one. One field pair (thisUpdate/nextUpdate)
+        differs, and the run goes from undecidable to checked clean
+must print:
+  - "UNUSABLE"
+  - "it is EXPIRED: nextUpdate is 2021-01-01 00:00:00Z"
+  - "so it speaks only about a status before its nextUpdate and nothing about now"
+  - "the supplied OCSP response vectors/pki/ocsp-signerA-expired.der is unusable"
+  - "checked 1 of 2 certificate(s) in the chain"
+  - "CANNOT DECIDE"
+  - "checked CLEAN"                        (on the control run, NOT on this one)
+requirements exercised: MA-64, MA-70, MA-71
+why it fails without the fix: MEASURED. The pre-fix verifier exits 2 ("unknown option
+        --ocsp-response"). With the option added and the window test removed — the response
+        parsed, its signature verified, its "good" used — this container reports exit 0
+        CONFORMANT and "checked CLEAN": a status that expired five years ago is read as a
+        statement about now
+how the dates are fixed, and why this needed one more step than the CRLs: `openssl ocsp`
+        timestamps a response with the build second (thisUpdate = now, nextUpdate = now +
+        -ndays), and it refuses a non-positive -ndays/-nmin ("Non-positive number", MEASURED on
+        openssl 3.5.3), so a response generated today can never be expired tomorrow and its
+        window cannot be moved backwards from the command line. tools/mkocsp.sh therefore moves
+        the two GeneralizedTime fields of every shipped response to the same fixed dates the
+        certificates and CRLs use — 2020-01-01 for thisUpdate, 2099-01-01 for nextUpdate, and
+        2021-01-01 here — and re-signs the moved tbsResponseData with the same responder key. The
+        result is a response the responder key genuinely signed; what is fixed is its window
+openssl: the verifier reads the window itself rather than trusting openssl, which DOES accept a
+        stale response with a warning — MEASURED:
+          $ openssl ocsp -respin vectors/pki/ocsp-signerA-expired.der \
+              -issuer vectors/pki/intermediateA.crt.pem -cert vectors/pki/signerA.crt.pem \
+              -CAfile vectors/pki/anchors/rootA.crt.pem -no_nonce
+            Response verify OK
+            vectors/pki/signerA.crt.pem: WARNING: Status times invalid.
+            OCSP routines:OCSP_check_validity:status expired
+            vectors/pki/signerA.crt.pem: good
+            This Update: Jan  1 00:00:00 2020 GMT
+            Next Update: Jan  1 00:00:00 2021 GMT
+        exit 0. A verifier that took openssl's exit code as the window check would report this as
+        a clean answer; this one reads thisUpdate and nextUpdate and refuses to convert an
+        expired statement into a current one
+what this vector does NOT claim: that the expired response was ever wrong. It was right when it
+        was issued. What it is not is evidence about now

@@ -1,0 +1,67 @@
+vector: 56-ocsp-unanchored-responder
+what:   a "good" answer signed by a responder that chains to NOTHING. The response is
+        well-formed, its CertID names the sealer correctly, its window is current, and its
+        signature verifies under the certificate embedded in it — it is simply signed by a
+        SELF-SIGNED responder certificate, so no supplied anchor vouches for the party that made
+        the statement. The signature is not the problem; the signer's standing is, and the report
+        says exactly which of the two failed
+run:    validator/p3-verify --container vectors/56-ocsp-unanchored-responder/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --ocsp-response vectors/pki/ocsp-signerA-rogue.der \
+          --revocation vectors/pki/crl-rootA-clean.pem \
+          vectors/56-ocsp-unanchored-responder/pkg
+exit:   3
+also:   validator/p3-verify --container vectors/56-ocsp-unanchored-responder/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --ocsp-response vectors/pki/ocsp-signerA-good.der \
+          --revocation vectors/pki/crl-rootA-clean.pem \
+          vectors/56-ocsp-unanchored-responder/pkg   ->  exit 0
+        the CONTROL: the same answer for the same serial, the same window, the same issuer in the
+        CertID — signed by the DELEGATED responder intermediate A issued, whose chain reaches
+        root A. One certificate differs (the signer of the response, and nothing inside it), and
+        the run goes from undecidable to checked clean
+must print:
+  - "UNUSABLE"
+  - "no signer of it can be established"
+  - "it must be signed by the certificate's issuer, or by a responder that issuer authorised"
+  - "openssl: self-signed certificate"
+  - "the supplied OCSP response vectors/pki/ocsp-signerA-rogue.der is unusable"
+  - "checked 1 of 2 certificate(s) in the chain"
+  - "CANNOT DECIDE"
+  - "checked CLEAN"                        (on the control run, NOT on this one)
+requirements exercised: MA-64, MA-70, MA-71
+why it fails without the fix: MEASURED. The pre-fix verifier exits 2 ("unknown option
+        --ocsp-response"). With the option added and the signer check replaced by a plain
+        signature check (`-no_cert_checks`), this container reports exit 0 CONFORMANT and
+        "checked CLEAN" on the word of a certificate nobody supplied a trust anchor for — the
+        response says "good", the signature over it is genuine, and nothing else is asked. The
+        arm is the same one a CRL with an unverifiable signature is refused by (vector 51's
+        mechanism, one axis over), and the exit code says the same thing: the answer cannot be
+        used, so the run cannot decide
+openssl: the two calls that tell "the signature does not verify" from "nothing vouches for the
+        signer" — both run by the verifier on the supplied file, neither contacting anything:
+          $ openssl ocsp -respin vectors/pki/ocsp-signerA-rogue.der \
+              -issuer vectors/pki/intermediateA.crt.pem -cert vectors/pki/signerA.crt.pem \
+              -CAfile vectors/pki/anchors/rootA.crt.pem -no_nonce
+            Response Verify Failure
+            OCSP routines:ocsp_verify_signer:certificate verify error:
+            Verify error: self-signed certificate
+          $ openssl ocsp -respin vectors/pki/ocsp-signerA-rogue.der \
+              -issuer vectors/pki/intermediateA.crt.pem -cert vectors/pki/signerA.crt.pem \
+              -CAfile vectors/pki/anchors/rootA.crt.pem -no_chain -no_cert_checks -no_nonce
+            Response Verify Failure
+            OCSP routines:ocsp_verify_signer:certificate verify error:
+            Verify error: self-signed certificate
+        The second call is asked with the signer's authorisation and chain NOT checked, so it
+        answers only "does the signature itself verify". Here it fails too — a self-signed signer
+        is refused even then — which is why the report says no signer can be established rather
+        than claiming the signature is broken. A responder issued by a DIFFERENT anchored CA is
+        the case where the second call succeeds and the first does not: MEASURED, openssl reports
+        "root ca not trusted" (ocsp_vfy.c), i.e. it requires the signer to be the certificate's
+        issuer or a certificate that issuer issued, not merely a certificate that chains to some
+        anchor. The verifier says which of the two arms it is in, and neither reads as a pass
+what this vector does NOT claim: that a self-signed responder is always worthless. It is worth
+        exactly what the party relying on it has decided to trust, and this run was given one
+        anchor — root A — and that anchor vouches for nothing here

@@ -1,7 +1,7 @@
 # The print artifact. Two steps: the .typ is generated from the HTML, then compiled.
 #
 #   make typst   regenerate site/martelage.typ from the two HTML pages
-#   make pdf     compile site/martelage-0.1.pdf from it
+#   make pdf     compile site/martelage-0.2.pdf from it
 #   make check   verify every text node of the HTML appears in the PDF
 #   make         = pdf
 #
@@ -25,11 +25,11 @@ typst:
 
 pdf:
 	$(MAKE) typst
-	$(TYPST) compile martelage.typ martelage-0.1.pdf
+	$(TYPST) compile martelage.typ martelage-0.2.pdf
 
 
 check: pdf
 	$(PYTHON) ../tools/checktext.py
 
 clean:
-	rm -f martelage.typ martelage-0.1.pdf
+	rm -f martelage.typ martelage-0.2.pdf

@@ -1,0 +1,50 @@
+vector: 58-revocation-dir-garbage
+what:   a directory holding material that is sufficient — root A's CRL and intermediate A's CRL
+        cover every certificate in the chain — and one file that is not revocation material at
+        all: a text file an operator left beside them. Every certificate IS checked, and the run
+        still cannot decide, because material it was handed could not be used. A verifier that
+        silently skips a file it cannot read is claiming more than it checked
+run:    validator/p3-verify --container vectors/58-revocation-dir-garbage/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --revocation-dir vectors/58-revocation-dir-garbage/material \
+          vectors/58-revocation-dir-garbage/pkg
+exit:   3
+also:   validator/p3-verify --container vectors/58-revocation-dir-garbage/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --revocation vectors/pki/crl-rootA-clean.pem \
+          --revocation vectors/pki/crl-intermediateA-clean.pem \
+          vectors/58-revocation-dir-garbage/pkg   ->  exit 0
+        the CONTROL: the two files that ARE revocation material, handed over as flags instead of
+        through the directory. Every certificate in the chain is spoken for, nothing unusable was
+        supplied, and the run is checked clean. So the exit code 3 above is caused by the file
+        that could not be read and by nothing else — the same material without it decides
+must print:
+  - "notes-from-the-operator.txt: UNUSABLE"
+  - "it parses as neither a CRL nor an OCSP response"
+  - "the supplied revocation material file"
+  - "is unusable, and no certificate below is reported as checked against it"
+  - "checked 2 certificate(s) in the chain CLEAN against the usable material, but 1 supplied material file(s) are unusable"
+  - "so the run cannot decide revocation"
+  - "CANNOT DECIDE"
+  - "verdict      CANNOT DECIDE"                   (the run's last line)
+requirements exercised: MA-64, MA-70, MA-71
+why it fails without the fix: MEASURED. The pre-fix verifier has no --revocation-dir option (exit
+        2, "unknown option --revocation-dir"). With the option added and unreadable files
+        SKIPPED rather than reported — the shape every "walk the directory, ignore what does not
+        parse" loop has — this container reports exit 0 CONFORMANT and says nothing at all about
+        the file: a run that was handed four statements, used two, and reported neither the
+        skips nor their number. That is the failure this vector exists for, and it is the reason
+        the skip is a report and an exit code rather than a line in a debug log
+why the exit code is 3 and not 1: nothing here contradicts the claim. Both CRLs are valid, both
+        speak for the certificates they should, and neither lists a revocation. What is missing is
+        the ability to say that the material was fully read — the §10.3 CANNOT DECIDE arm, the
+        same one an expired CRL or an unverifiable response lands in. If something ELSE in the
+        same run refuses — a revoked certificate, a broken seal — the refusal wins and the exit
+        code is 1, because the evidence that the claim is false is stronger than the admission
+        that not everything was read
+what this vector does NOT claim: that a directory must be homogeneous, or that an operator cannot
+        keep notes beside their CRLs. It claims that a file this verifier was handed and could not
+        read is a fact the run reports, and that the report never converts "I could not read this"
+        into "there was nothing in it"

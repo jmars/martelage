@@ -24,3 +24,9 @@ keyUsage               = critical,digitalSignature
 extendedKeyUsage       = critical,timeStamping
 subjectKeyIdentifier   = hash
 authorityKeyIdentifier = keyid
+[ v3_ocsp ]
+basicConstraints       = critical,CA:FALSE
+keyUsage               = critical,digitalSignature
+extendedKeyUsage       = critical,OCSPSigning
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid

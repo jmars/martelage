@@ -73,6 +73,12 @@ keyUsage               = critical,digitalSignature
 extendedKeyUsage       = critical,timeStamping
 subjectKeyIdentifier   = hash
 authorityKeyIdentifier = keyid
+[ v3_ocsp ]
+basicConstraints       = critical,CA:FALSE
+keyUsage               = critical,digitalSignature
+extendedKeyUsage       = critical,OCSPSigning
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid
 EOF
 cnf="$pki/openssl.cnf"
 
@@ -94,6 +100,13 @@ leaf() { # $1: basename, $2: CN, $3: serial, $4: issuer basename, $5: ext sectio
 		-set_serial "$3" -sha256 -not_before "$6" -not_after "$7" \
 		-extfile "$cnf" -extensions "$5" -out "$pki/$1.crt.pem" 2>/dev/null
 	rm -f "$pki/$1.csr"
+}
+rootleaf() { # $1: basename, $2: CN, $3: serial — a self-signed certificate that is not a CA
+	key "$1"
+	"$OPENSSL" req -new -x509 -key "$pki/$1.key.pem" -sha256 -set_serial "$3" \
+		-not_before "$NB_VALID" -not_after "$NA_VALID" \
+		-subj "/CN=$2/O=martelage test PKI (throwaway)" \
+		-config "$cnf" -extensions v3_ocsp -out "$pki/$1.crt.pem" 2>/dev/null
 }
 # a second certificate for an EXISTING key pair: same subject, same public key,
 # a different validity window. One axis, one difference — a container signed with
@@ -134,6 +147,14 @@ leaf operator "Operator GmbH" 0x0A13 intermediateA v3_sealer "$NB_VALID" "$NA_VA
 # a SECOND sealer under the same intermediate: the control for the multi-signer
 # arm. Two signers, neither of them the operator, must still pass.
 leaf signerC "Witness C GmbH" 0x0A14 intermediateA v3_sealer "$NB_VALID" "$NA_VALID"
+
+# the OCSP responders. The delegated one is issued by intermediate A, so its
+# chain reaches root A (the anchor the vectors supply) and it is authorised by
+# the CA that issued the certificates it answers about. The rogue one is
+# SELF-SIGNED: its answers carry a valid signature from a party no supplied
+# anchor vouches for, which is the arm tools/mkocsp.sh builds a response for.
+leaf ocsp-responder "martelage test OCSP responder" 0x0A31 intermediateA v3_ocsp "$NB_VALID" "$NA_VALID"
+rootleaf ocsp-rogue "martelage rogue OCSP responder" 0x0A32
 
 # the timestamping authority
 leaf tsa "martelage test TSA" 0x0A21 rootA v3_tsa "$NB_VALID" "$NA_VALID"
@@ -186,8 +207,12 @@ chmod 644 "$pki"/*.crt.pem "$pki"/*.key.pem "$pki"/*.cnf "$pki"/*.serial "$pki"/
 # the CRLs, from the certificates above. Separate script so the shipped ones can
 # be rebuilt without regenerating every key: `sh tools/mkcrl.sh vectors/pki`.
 sh "$here/mkcrl.sh" "$pki" >/dev/null
+# the OCSP responses, from the certificates above and the two responders. Separate
+# for the same reason: `sh tools/mkocsp.sh vectors/pki`.
+sh "$here/mkocsp.sh" "$pki" >/dev/null
 
 printf 'mkpki.sh: built %s\n' "$pki"
-for f in rootA intermediateA intermediateA-expired signerA signerC signerB expired operator tsa tsa-expired rootB; do
+for f in rootA intermediateA intermediateA-expired signerA signerC signerB expired operator tsa tsa-expired rootB \
+         ocsp-responder ocsp-rogue; do
 	printf '  %-14s %s\n' "$f" "$("$OPENSSL" x509 -in "$pki/$f.crt.pem" -noout -subject -issuer -dates -dateopt iso_8601 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g')"
 done

@@ -9,7 +9,7 @@ is, what it proves, what it does not, and how to use it.
 | `usage.html` | the usage: verifying, verifying without tooling, producing, chain and anchor, the anchor profiles (P1/P2 and the EU qualified seal), the limits, where the evidence lives |
 | `site.css` | the stylesheet: the design pass applied — tokens, type scale, layout, dark scheme, print |
 | `martelage.typ` | the typeset document, **generated** from the two HTML pages by `../tools/html2typst.py` |
-| `martelage-0.1.pdf` | the print artifact, compiled from `martelage.typ` by Typst |
+| `martelage-0.2.pdf` | the print artifact, compiled from `martelage.typ` by Typst |
 | `Makefile` | `make typst`, `make pdf`, `make check` |
 | `README.md` | this file |
 
@@ -50,18 +50,21 @@ is marked MEASURED with the command that produced it. No marketing register, no 
 product framing — one implementation is named only where the standard's own informative Annex A
 names it.
 
-## The print artifact (`martelage.typ` → `martelage-0.1.pdf`)
+## The print artifact (`martelage.typ` → `martelage-0.2.pdf`)
 
 The HTML is the source of truth and stays the source of truth. Typst is the *typesetting* path:
 `../tools/html2typst.py` reads `index.html` and `usage.html` and emits `martelage.typ`, which Typst
-compiles to `martelage-0.1.pdf`. **The `.typ` is generated — do not hand-edit it.** Edit the prose in
+compiles to `martelage-0.2.pdf`. The artifact's name carries the document version, so a version bump
+renames it: `tools/html2typst.py` (the title page and the running footer), `tools/checktext.py` (which
+pins the footer it strips) and the `Makefile` are the three places to change, and `make check` fails
+if they disagree. **The `.typ` is generated — do not hand-edit it.** Edit the prose in
 the HTML and rebuild; a hand edit is lost on the next `make typst`. The browser print stylesheet in
 `site.css` (`@media print`) is untouched and still serves people who print the HTML: it is the
 fallback, not the artifact.
 
 ```
 make -C site typst   # python3 tools/html2typst.py      -> site/martelage.typ
-make -C site pdf     # typst compile martelage.typ martelage-0.1.pdf   (SOURCE_DATE_EPOCH=0)
+make -C site pdf     # typst compile martelage.typ martelage-0.2.pdf   (SOURCE_DATE_EPOCH=0)
 make -C site check   # python3 tools/checktext.py       -> every HTML text node present in the PDF
 ```
 
@@ -86,14 +89,16 @@ like any other code. Two builds of the same source are byte-identical: `SOURCE_D
 pinned in the `Makefile`, so the PDF carries a constant creation date instead of the build second.
 
 **One orientation.** Every page is A4 portrait: the artifact contains no rotated sheet, no landscape
-insert, and no block that moves to a wider one. MEASURED on the built PDF — 15 pages, 15 `/MediaBox`
-entries, **one distinct value** (`0 0 595.2756 841.8898`), and no `/Rotate` on any page. That is 15
-pages against the landscape build's 16 and the portrait-with-flipped-inserts build's 22: the flip
-cost six pages over landscape because each insert broke the page before and after it, and putting
-code back into the portrait column gives those pages back. (It was 12 pages before the anchor
-profiles section of `usage.html` was written out — the two pages are that section, not a change of
-geometry: the page size, the measure and the code sizes are the same. The P3 verifier, built since,
-adds one more page to that section, and the same holds: 15 pages, one page size, one measure.) The browser print path is a
+insert, and no block that moves to a wider one. MEASURED on the built PDF — 18 pages, 18 `/MediaBox`
+entries, **one distinct value** (`0 0 595.2756 841.8898`), and no `/Rotate` on any page, with
+`/Count 18` on the page tree. That is 18 pages against the landscape build's 16 and the
+portrait-with-flipped-inserts build's 22: the flip cost six pages over landscape because each insert
+broke the page before and after it, and putting code back into the portrait column gives those pages
+back. The count has only ever moved with content, never with geometry: 12 pages before the anchor
+profiles section of `usage.html` was written out, 15 when the P3 verifier was built, and 18 now that
+the revocation inputs (`--ocsp-response`, `--revocation-dir`) and the document-version record (§11.7)
+are written out — the page size, the measure and the code sizes are unchanged, and the whole footer
+block on every page still reads `MARTELAGE-0.2 — draft 0.2`. The browser print path is a
 different path, and is stated plainly rather than matched: `@media print` in `site.css` still asks for
 `size: landscape` and `white-space: pre-wrap`, so printing the HTML from a browser gives a landscape
 sheet whose pasted lines re-wrap, while the artifact is portrait and marks every break it makes. The

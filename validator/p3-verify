@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""p3-verify — the MARTELAGE-0.1 verifier for the P3 anchor profile.
+"""p3-verify — the MARTELAGE-0.2 verifier for the P3 anchor profile.
 
   profile wire string: p3-eidas-qualified-seal-asic-e   (spec §9.3)
 
@@ -39,17 +39,28 @@ What it verifies (§9.3 P3):
   * NO signer is the operator — every signer of every entry is compared against
     --operator-cert, and one of them being the operator refuses the container
     (§9.3 limit i);
-  * revocation, ONLY from the CRLs the verifier was handed with --revocation:
-    the signature, window and entry list of every supplied CRL are read, and
-    every certificate in the chain a supplied CRL speaks for is checked against
-    it. A certificate a supplied CRL lists as revoked refuses the container.
-    There is no network path in this tool: nothing is fetched, downloaded or
-    queried, and an OCSP responder is never contacted. CRL only — OCSP is not
-    implemented here at all, not even from a supplied OCSP response.
+  * revocation, ONLY from the material the verifier was handed — a CRL with
+    --revocation FILE, an OCSP response with --ocsp-response FILE, or a
+    directory of both with --revocation-dir DIR. Every supplied CRL's
+    signature, window and entry list are read; every supplied OCSP response's
+    response status, signer, window and per-certificate status are read, and
+    its own signature is verified against a signer the certificate's issuer
+    authorised and that chains to a supplied trust anchor. Every certificate in
+    the chain a supplied CRL or OCSP response speaks for is checked against it.
+    A certificate the material lists as revoked refuses the container; a
+    certificate the material reports 'good' is checked and clean; a certificate
+    no supplied material speaks for is NOT checked and makes the run
+    undecidable. Material that contradicts itself about one certificate —
+    one supplied file reporting it revoked and another reporting it good —
+    REFUSES: a positive statement of revocation is not cancelled by a 'good'
+    from another responder, and the report names both files. There is no network path in this tool: nothing is fetched,
+    downloaded or queried, an OCSP responder is never contacted, and an OCSP
+    response is never requested — a response is a FILE this run was given
+    (`openssl ocsp -respin`), never an answer to a query it made.
 
 What it does NOT verify, on any run, and says so in its own output (§10.7):
-revocation unless --revocation is given — and then only against those CRLs, so
-no live OCSP responder, no CRL download and no long-term validation; long-term
+revocation unless revocation material is given — and then only against that
+material, so no live OCSP responder, no CRL download and no long-term
 validation (LTV material is reported present or absent, never validated); the
 truth or completeness of the records (§9.3 limit iii); the signer's legal
 identity beyond what the certificate claims; and the signer's key usage beyond
@@ -91,10 +102,10 @@ RESID2 = ("  A coherent tamper performed before the first observation is invisib
 # what every earlier run printed), armed it says exactly what was checked and
 # against which CRL, and what is still out of reach.
 NOT_CHECKABLE = [
-    ("revocation", "no CRL is read and no OCSP responder is contacted, by this verifier or by any run of it: there "
-                   "is no network path in this tool at all. A chain established here is established by signature "
-                   "and by certificate date only. 'Valid at the claimed time' below means the dates, never "
-                   "revocation status."),
+    ("revocation", "no CRL and no OCSP response is read and no OCSP responder is contacted, by this verifier or "
+                   "by any run of it: there is no network path in this tool at all. A chain established here is "
+                   "established by signature and by certificate date only. 'Valid at the claimed time' below means "
+                   "the dates, never revocation status."),
     ("long-term validation", "LTV material is reported present or absent and is never validated. A container "
                              "carrying archival timestamps or validation material is reported as carrying it, "
                              "which is not a statement that it validates (§9.3)."),
@@ -120,11 +131,12 @@ NOT_CHECKABLE = [
 # checked, against which CRL, and what a supplied CRL cannot establish
 REV_ARMED_UNCHECKABLE = ("checked against the revocation material THIS RUN WAS GIVEN and nothing else: %s. "
                          "No network path exists in this tool — nothing is fetched, no CRL is downloaded, no OCSP "
-                         "responder is contacted — so a certificate no supplied CRL speaks for has no revocation "
-                         "status in this report, a certificate revoked after the CRL's nextUpdate is not visible "
-                         "here, and long-term validation (archival timestamps, proof of existence at a past time) "
-                         "is still never validated. 'Valid at the claimed time' below still means the certificate "
-                         "dates.")
+                         "response is requested and no responder is contacted — so a certificate no supplied "
+                         "material speaks for has no revocation status in this report, a revocation published "
+                         "after a CRL's nextUpdate or a response's nextUpdate is not visible here, the status is "
+                         "the status NOW and not at the claimed time, and long-term validation (archival "
+                         "timestamps, proof of existence at a past time) is still never validated. 'Valid at the "
+                         "claimed time' below still means the certificate dates.")
 
 
 class Refuse(Exception):
@@ -219,8 +231,9 @@ class Verifier:
         self.mfpath = None
         self.ltv_state = "absent — reported, never validated"
         self.operator_state = "NOT checked — --operator-cert was not supplied"
-        self.rev_state = "NOT checked — --revocation was not supplied"
+        self.rev_state = "NOT checked — no revocation material was supplied"
         self.rev_rows = []
+        self.rev_established = []
         self.rev_armed_text = None
         self.date_state = "not reached"
         self.layer = {}
@@ -1145,7 +1158,7 @@ class Verifier:
                              "key differs, so this is not a self-seal, but a reader should not read the subject as a "
                              "distinct person without checking why" % (signer.get("subject"),))
 
-    # ── revocation, only from the CRLs this run was given ─────────────────
+    # ── revocation, only from the material this run was given ─────────────
     def chain_certificates(self):
         """every certificate this run established, once each, with its file.
 
@@ -1188,8 +1201,9 @@ class Verifier:
         Nothing here decides anything about the package: a CRL that cannot be
         used is reported as unusable and the report says so, because a CRL the
         verifier could not validate must never read as "nothing is revoked"."""
-        info = {"path": path, "fmt": None, "pem": None, "issuer": None, "issuer_cert": None,
-                "this": None, "next": None, "entries": {}, "state": None, "why": None}
+        info = {"path": path, "kind": "CRL", "fmt": None, "pem": None, "issuer": None,
+                "issuer_cert": None, "this": None, "next": None, "entries": {}, "state": None,
+                "why": None, "covers": {}, "parsed": False}
         try:
             data = open(path, "rb").read()
         except OSError as exc:
@@ -1217,6 +1231,7 @@ class Verifier:
             info["why"] = ("openssl could not read it as a CRL (%s)"
                            % (self.errline(proc) or "not a CRL"))
             return info
+        info["parsed"] = True
         m = re.search(r"^\s*Issuer:\s*(.+?)\s*$", text, re.M)
         info["issuer"] = m.group(1) if m else None
         for key, field in (("Last Update", "this"), ("Next Update", "next")):
@@ -1257,6 +1272,14 @@ class Verifier:
                            % (info["issuer"] or "<none stated>"))
             return info
 
+        # which certificates of THIS chain it covers: those issued by the CA whose
+        # signature just verified. It is the same coverage question an OCSP
+        # response answers with its CertID, asked of the other kind of material.
+        for item in self.chain_certificates():
+            if not item["anchor"] and (norm_dn(item["cert"].get("issuer"))
+                                       == norm_dn(info["issuer_cert"]["cert"].get("subject"))):
+                info["covers"][cert_key(item["cert"])] = {"label": item["label"], "cert": item["cert"]}
+
         # is it current? The clock is this host's and is used for one purpose
         # only: whether the CRL a verifier handed over is usable NOW. It is not
         # the claimed time and nothing about the seal is decided by it.
@@ -1291,48 +1314,352 @@ class Verifier:
                    info["next"].strftime(ISO) if info["next"] else "?",
                    len(info["entries"]), "y" if len(info["entries"]) == 1 else "ies"))
 
-    def check_revocation(self):
-        """revocation against the CRLs this run was handed, and nothing else.
+    def unusable_material(self, path, kind, why):
+        """material this run was handed and could not use, in the shape the rest of
+        the revocation check reads. It is REPORTED, never dropped: a verifier that
+        silently skips material it was given is claiming more than it checked."""
+        return {"path": path, "kind": kind, "fmt": None, "state": "unusable", "why": why,
+                "entries": [], "covers": {}}
 
-        The rule this implements: a certificate the supplied material does not
-        speak for is reported as NOT CHECKED and makes the run undecidable; a
-        certificate the material lists as revoked REFUSES the container; and a
-        CRL that is expired, not yet valid, or whose signature does not verify
-        is reported unusable and never counts as a clean check."""
-        self.rev_state = "NOT checked — --revocation was not supplied"
+    def rev_material_paths(self):
+        """every file this run was handed as revocation material, as (path, kind),
+        in the order the flags were given, with the directory expansions in place.
+
+        A directory is read for EVERY regular file it holds: what a file is (a CRL,
+        an OCSP response, or neither) is decided by what openssl can read it as, and
+        a file that is neither is reported and makes the run undecidable rather than
+        being skipped."""
+        files = [(path, "crl") for path in (self.a.revocation or [])]
+        files += [(path, "ocsp") for path in (self.a.ocsp_response or [])]
+        for d in (self.a.revocation_dir or []):
+            if not os.path.isdir(d):
+                self.fatal("--revocation-dir %s is not a directory (exit 2)" % d)
+            try:
+                names = sorted(os.listdir(d))
+            except OSError as exc:
+                self.fatal("--revocation-dir %s is unreadable: %s (exit 2)" % (d, exc))
+            found = False
+            for name in names:
+                path = os.path.join(d, name)
+                if not os.path.isfile(path):
+                    self.ignored.append(
+                        "  revocation material %-28s — a directory entry that is not a regular file: reported, "
+                        "never read as revocation material (§10.7)" % os.path.relpath(path))
+                    continue
+                found = True
+                files.append((path, None))
+            if not found:
+                self.cannot_decide("  revocation: --revocation-dir %s holds no regular file, so this run was "
+                                   "handed nothing to check any certificate against (§10.3 MA-70)" % d)
+        return files
+
+    def read_rev_material(self, path, kind, idx):
+        """read one supplied file as revocation material: the kind the flag stated,
+        or — for a file found in a --revocation-dir — whatever it parses as."""
+        if kind == "crl":
+            return self.read_crl(path, idx)
+        if kind == "ocsp":
+            return self.read_ocsp(path, idx)
+        try:
+            data = open(path, "rb").read()
+        except OSError as exc:
+            return self.unusable_material(path, "material", "it could not be read: %s" % exc)
+        if b"-----BEGIN OCSP RESPONSE-----" in data:
+            return self.read_ocsp(path, idx)
+        if b"-----BEGIN X509 CRL-----" in data:
+            return self.read_crl(path, idx)
+        # neither header: whichever of the two openssl can read it as, if either.
+        # A file that PARSES is answered by what it says (expired, revoked,
+        # speaks for nothing), not by "it is neither a CRL nor a response".
+        crl = self.read_crl(path, idx)
+        if crl["parsed"]:
+            return crl
+        ocsp = self.read_ocsp(path, idx)
+        if ocsp["parsed"]:
+            return ocsp
+        return self.unusable_material(
+            path, "material",
+            "it parses as neither a CRL nor an OCSP response — %s; %s" % (crl["why"], ocsp["why"]))
+
+    def read_ocsp(self, path, idx):
+        """one supplied OCSP response: its status, signer, window and the
+        certificate(s) it speaks for, with the status it gives each.
+
+        The response is a FILE. Every openssl call below reads that file with
+        -respin: no request is SENT, no responder is contacted, nothing is fetched,
+        and this tool has no network path at all. (openssl builds a request in
+        memory when -cert is given, only to match the response's CertID against
+        the certificate; nothing is written to a file and nothing leaves the
+        process.) `openssl ocsp -respin` reads DER only, so a PEM
+        response is decoded to DER here, once, and the input format is reported.
+
+        Whether the response's own signature verifies is asked per certificate,
+        because the question is "did a signer this certificate's issuer authorised
+        sign THIS status for THIS certificate": `openssl ocsp -respin ... -issuer
+        <the certificate's issuer> -cert <the certificate> -CAfile <anchors>`
+        verifies the signature, requires the signer to be the issuer or a
+        responder the issuer issued, and requires that signer's chain to reach a
+        supplied anchor.
+        """
+        info = {"path": path, "kind": "OCSP", "fmt": None, "der": None, "status": None,
+                "responder": None, "produced": None, "entries": [], "covers": {}, "state": None,
+                "why": None, "sig_fail": None, "unmatched": [], "parsed": False, "nothing": None}
+        try:
+            data = open(path, "rb").read()
+        except OSError as exc:
+            self.fatal("--ocsp-response %s is unreadable: %s (exit 2)" % (path, exc))
+        der = os.path.join(self.tmp, "ocsp-%02d.der" % idx)
+        block = re.search(rb"-----BEGIN OCSP RESPONSE-----(.*?)-----END OCSP RESPONSE-----", data, re.S)
+        if block:
+            info["fmt"] = "PEM"
+            try:
+                import base64
+                blob = base64.b64decode(re.sub(rb"\s+", b"", block.group(1)), validate=True)
+            except Exception as exc:  # noqa: BLE001 - name it, do not guess at the bytes
+                info["state"] = "unusable"
+                info["why"] = ("it carries a PEM OCSP RESPONSE header whose base64 body does not decode (%s)"
+                               % exc)
+                return info
+            with open(der, "wb") as fh:
+                fh.write(blob)
+        else:
+            info["fmt"] = "DER"
+            with open(der, "wb") as fh:
+                fh.write(data)
+        info["der"] = der
+        proc = self.openssl_run(["ocsp", "-respin", der, "-resp_text", "-no_nonce"],
+                                label="the OCSP response: response status, signer, window, SingleResponses")
+        text = proc.stdout.decode("utf-8", "replace")
+        if "OCSP Response Status" not in text:
+            info["state"] = "unusable"
+            info["why"] = ("it is not an OCSP response this openssl can read (%s)"
+                           % (self.errline(proc) or "not an OCSP response"))
+            return info
+        info["parsed"] = True
+        m = re.search(r"^\s*OCSP Response Status:\s*(.+?)\s*$", text, re.M)
+        info["status"] = m.group(1) if m else None
+        m = re.search(r"^\s*Responder Id:\s*(.+?)\s*$", text, re.M)
+        info["responder"] = m.group(1) if m else None
+        m = re.search(r"^\s*Produced At:\s*(.+?)\s*$", text, re.M)
+        info["produced"] = parse_date(m.group(1)) if m else None
+        if info["status"] and not info["status"].startswith("successful"):
+            info["state"] = "unusable"
+            info["why"] = ("the responder answered %r — a response that is not successful carries no status for "
+                           "any certificate" % info["status"])
+            return info
+        for block in re.split(r"(?m)^\s*Certificate ID:\s*$", text)[1:]:
+            entry = {"serial": None, "status": None, "this": None, "next": None,
+                     "revtime": None, "reason": None, "fresh": None}
+            m = re.search(r"Serial Number:\s*([0-9A-Fa-f:]+)", block)
+            entry["serial"] = m.group(1) if m else None
+            m = re.search(r"Cert Status:\s*(\w+)", block)
+            entry["status"] = m.group(1) if m else None
+            for key, field in (("This Update", "this"), ("Next Update", "next"),
+                               ("Revocation Time", "revtime")):
+                m = re.search(r"^\s*%s:\s*(.+?)\s*$" % key, block, re.M)
+                entry[field] = parse_date(m.group(1)) if m else None
+            m = re.search(r"Revocation Reason:\s*(.+?)\s*$", block, re.M)
+            entry["reason"] = m.group(1) if m else None
+            info["entries"].append(entry)
+        if not info["entries"]:
+            info["state"] = "unusable"
+            info["why"] = ("it carries no SingleResponse at all, so it speaks for no certificate")
+            return info
+        # is it current? The clock is this host's and is used for one purpose only:
+        # whether the response this verifier was handed is usable NOW. It is not the
+        # claimed time, and nothing about the seal is decided by it.
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc)
+        for entry in info["entries"]:
+            if entry["this"] is None or entry["next"] is None:
+                entry["fresh"] = ("no usable window (thisUpdate %r, nextUpdate %r), so whether it is current "
+                                  "cannot be established" % (entry["this"], entry["next"]))
+            elif entry["next"] < now:
+                entry["fresh"] = ("EXPIRED: nextUpdate is %s and this host's clock is %s, so it speaks only "
+                                  "about a status before its nextUpdate and nothing about now"
+                                  % (entry["next"].strftime(ISO), now.strftime(ISO)))
+            elif entry["this"] > now:
+                entry["fresh"] = ("NOT YET VALID: thisUpdate is %s and this host's clock is %s"
+                                  % (entry["this"].strftime(ISO), now.strftime(ISO)))
+        if all(entry["fresh"] for entry in info["entries"]):
+            info["state"] = "unusable"
+            info["why"] = "it is %s" % info["entries"][0]["fresh"]
+            return info
+
+        # which certificate in THIS chain does it speak for, and does its own
+        # signature verify? Both questions are answered by openssl reading the
+        # response file: nothing is requested from anyone.
+        bundle = getattr(self, "anchors_bundle", None)
+        chain = self.chain_certificates()
+        by_subject = {}
+        for item in chain:
+            by_subject.setdefault(norm_dn(item["cert"].get("subject")), item)
+        by_serial = {}
+        for entry in info["entries"]:
+            by_serial.setdefault(norm_serial(entry["serial"]), entry)
+        for item in chain:
+            cert = item["cert"]
+            if item["anchor"]:
+                continue
+            entry = by_serial.get(norm_serial(cert.get("serial")))
+            if entry is None:
+                continue
+            issuer = by_subject.get(norm_dn(cert.get("issuer")))
+            if issuer is None:
+                info["unmatched"].append(
+                    "%s (serial %s): issued by %s, which is not a certificate this run holds, so the signer's "
+                    "authorisation cannot be established" % (item["label"], cert.get("serial"), cert.get("issuer")))
+                continue
+            if bundle is None:
+                info["sig_fail"] = info["sig_fail"] or ("no --trust-anchors was supplied, so no trust anchor is "
+                                                       "available to establish the signer's chain")
+                continue
+            proc = self.openssl_run(
+                ["ocsp", "-respin", der, "-issuer", issuer["path"], "-cert", item["path"],
+                 "-CAfile", bundle, "-no_nonce"],
+                label="does this OCSP response speak for %s, and does its signature verify under a signer %s "
+                      "authorised" % (item["label"], issuer["cert"]["subject"]))
+            out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+            if "Response verify OK" not in out:
+                # why it failed matters: a signature that does not verify and a
+                # signer no supplied anchor vouches for are two different facts, and
+                # openssl reports both as one "Response Verify Failure". Asked again
+                # with the signer's authorisation and chain not checked, openssl
+                # answers only "does the signature itself verify" — MEASURED on
+                # openssl 3.5.3 (a responder issued by another anchored CA verifies
+                # with -no_cert_checks and fails without it; a self-signed one fails
+                # both ways).
+                probe = self.openssl_run(
+                    ["ocsp", "-respin", der, "-issuer", issuer["path"], "-cert", item["path"],
+                     "-CAfile", bundle, "-no_chain", "-no_cert_checks", "-no_nonce"],
+                    label="does this response's own signature verify at all, ignoring the signer's "
+                          "authorisation and chain")
+                pout = (probe.stdout + probe.stderr).decode("utf-8", "replace")
+                said = self.errline(proc) or "the response's signature did not verify"
+                # Three different facts reach this one failure, and the report names
+                # the one it measured: a signature that does not verify, a signer no
+                # chain reaches, and a signer whose chain is fine but which the
+                # certificate's issuer did not authorise.
+                broken = re.search(r"(signature failure|EVP_DigestVerifyFinal|bad signature)", out + pout, re.I)
+                if broken:
+                    info["sig_fail"] = info["sig_fail"] or (
+                        "no signer of it can be established — its own signature does not verify (openssl: %s)"
+                        % broken.group(1))
+                elif "Response verify OK" in pout:
+                    info["sig_fail"] = info["sig_fail"] or (
+                        "its own signature verifies, but the signer it names is not the certificate's issuer and "
+                        "is not a responder that issuer authorised with a chain reaching a supplied trust anchor "
+                        "(%s)" % said)
+                else:
+                    info["sig_fail"] = info["sig_fail"] or (
+                        "no signer of it can be established — it must be signed by the certificate's issuer, or by "
+                        "a responder that issuer authorised whose chain reaches a supplied trust anchor (%s)"
+                        % said)
+                continue
+            if "No Status found" in out:
+                # the response's own CertID is not this certificate's: it is not about
+                # it, and it must never be counted for it
+                info["unmatched"].append("%s (serial %s): the response carries no status for it"
+                                         % (item["label"], cert.get("serial")))
+                continue
+            info["covers"][cert_key(cert)] = {"entry": entry, "label": item["label"], "cert": cert,
+                                              "issuer": issuer}
+        if not info["covers"] and info["sig_fail"]:
+            info["state"] = "unusable"
+            info["why"] = info["sig_fail"]
+            return info
+        if not info["covers"]:
+            # It parses, its signature is not the problem, and it names no
+            # certificate of this chain. That is the standing a CRL from an
+            # unrelated CA already has in this report: usable, and covering
+            # nothing — reported, never counted as a check for anyone.
+            info["nothing"] = ("it names %s, none of which is a certificate in this chain, so it establishes "
+                               "nothing about this package"
+                               % (", ".join("serial %s (%s)" % (entry["serial"], entry["status"])
+                                            for entry in info["entries"]) or "nothing"))
+            if info["unmatched"]:
+                info["nothing"] += "; " + "; ".join(info["unmatched"])
+        return info
+
+    def ocsp_summary(self, info):
+        """one line naming exactly which OCSP response this is: the certificate it
+        speaks for, that certificate's status, its window and its signer."""
+        rows = []
+        for cov in info["covers"].values():
+            entry = cov["entry"]
+            rows.append("%s for %s (thisUpdate %s, nextUpdate %s)"
+                        % (entry["status"], cov["label"],
+                           entry["this"].strftime(ISO) if entry["this"] else "?",
+                           entry["next"].strftime(ISO) if entry["next"] else "?"))
+        return ("the OCSP response signed by %s, stating %s"
+                % (info["responder"] or "<signer not stated>", "; ".join(rows)))
+
+    def material_summary(self, info):
+        """one line naming the material, whatever kind it is"""
+        return self.ocsp_summary(info) if info["kind"] == "OCSP" else self.crl_summary(info)
+
+    def material_kind(self, info):
+        """what the file was supplied as, or what a directory's file turned out to be"""
+        return {"OCSP": "OCSP response", "CRL": "CRL"}.get(info["kind"], "revocation material file")
+
+    def check_revocation(self):
+        """revocation against the material this run was handed, and nothing else.
+
+        The rules this implements, for a CRL and for an OCSP response alike: a
+        certificate the supplied material does not speak for is reported as NOT
+        CHECKED and makes the run undecidable; a certificate the material lists —
+        or reports — as revoked REFUSES the container; a certificate the material
+        reports as good is checked and clean; and material that is expired, not yet
+        valid, of unverifiable signature, of unsuccessful response status, that
+        answers 'unknown', or that speaks for another certificate is reported
+        unusable and never counts as a clean check."""
+        self.rev_state = "NOT checked — no revocation material was supplied"
         self.rev_armed_text = None
-        if self.a.revocation is None:
+        armed = bool(self.a.revocation or self.a.ocsp_response or self.a.revocation_dir)
+        if not armed:
             return
+        supplied_names = ", ".join(os.path.relpath(p) for p in
+                                   (list(self.a.revocation or []) + list(self.a.ocsp_response or [])
+                                    + list(self.a.revocation_dir or [])))
         if not self.signer_certs:
             self.rev_state = ("NOT checked — no signer certificate was established by this run, so there is no "
                               "chain to check revocation against")
-            self.rev_armed_text = ("no CRL was read for this run: --revocation was supplied (%s) and this run "
-                                   "established no signer certificate, so there was no chain to check against "
+            self.rev_armed_text = ("no revocation material was read for this run: it was supplied (%s) and this "
+                                   "run established no signer certificate, so there was no chain to check against "
                                    "it. No network path exists in this tool — nothing is fetched, no CRL is "
-                                   "downloaded, no OCSP responder is contacted — and no certificate's revocation "
-                                   "status is reported as checked."
-                                   % ", ".join(os.path.relpath(p) for p in self.a.revocation))
-            self.cannot_decide("  revocation: --revocation was supplied, but this run established no signer "
+                                   "downloaded, no OCSP response is requested, no responder is contacted — and no "
+                                   "certificate's revocation status is reported as checked." % supplied_names)
+            self.cannot_decide("  revocation: revocation material was supplied, but this run established no signer "
                                "certificate, so there is no certificate chain to check it against and no "
                                "certificate's revocation status is reported as checked (§10.3 MA-70)")
             return
-        for path in self.a.revocation:
-            if not os.path.isfile(path) or not os.access(path, os.R_OK):
-                self.fatal("--revocation %s is missing or unreadable (exit 2)" % path)
-        crls = [self.read_crl(path, i) for i, path in enumerate(self.a.revocation)]
-        usable = [c for c in crls if c["state"] is None]
-        for c in crls:
-            if c["state"]:
-                self.rev_rows.append((os.path.relpath(c["path"]),
-                                      "UNUSABLE — %s" % c["why"]))
-                self.cannot_decide("  revocation: the supplied CRL %s is unusable, and no certificate below is "
+        for flag, paths in (("--revocation", self.a.revocation), ("--ocsp-response", self.a.ocsp_response)):
+            for path in (paths or []):
+                if not os.path.isfile(path) or not os.access(path, os.R_OK):
+                    self.fatal("%s %s is missing or unreadable (exit 2)" % (flag, path))
+        files = self.rev_material_paths()
+        material = [self.read_rev_material(path, kind, i) for i, (path, kind) in enumerate(files)]
+        usable = [m for m in material if m["state"] is None]
+        usable_crl = [m for m in usable if m["kind"] != "OCSP"]
+        usable_ocsp = [m for m in usable if m["kind"] == "OCSP"]
+        for m in material:
+            rel = os.path.relpath(m["path"])
+            if m["state"]:
+                self.rev_rows.append((rel, "UNUSABLE — %s" % m["why"]))
+                self.cannot_decide("  revocation: the supplied %s %s is unusable, and no certificate below is "
                                    "reported as checked against it — %s (§10.3 MA-70)"
-                                   % (os.path.relpath(c["path"]), c["why"]))
+                                   % (self.material_kind(m), rel, m["why"]))
+            elif m["covers"]:
+                self.rev_rows.append((rel, "usable %s (%s) — %s"
+                                      % (self.material_kind(m), m["fmt"], self.material_summary(m))))
             else:
-                self.rev_rows.append((os.path.relpath(c["path"]),
-                                      "usable (%s) — %s" % (c["fmt"], self.crl_summary(c))))
+                self.rev_rows.append((rel, "usable %s (%s), covering NOTHING in this chain — %s"
+                                      % (self.material_kind(m), m["fmt"],
+                                         m.get("nothing") or (self.material_summary(m) +
+                                                              " speaks for no certificate of this chain"))))
 
-        revoked, clean, gaps, anchors = 0, 0, [], 0
+        revoked, clean, gaps, unknowns, anchors = 0, 0, [], [], 0
+        est = []
         for item in self.chain_certificates():
             cert = item["cert"]
             if item["anchor"]:
@@ -1341,16 +1668,24 @@ class Verifier:
                                       "not checked — a supplied trust anchor is the trust input, not a "
                                       "certificate this run asks anyone to revoke"))
                 continue
-            mine = [c for c in usable
+            key = cert_key(cert)
+            mine = [c for c in usable_crl
                     if norm_dn(c["issuer_cert"]["cert"].get("subject")) == norm_dn(cert.get("issuer"))]
-            if not mine:
+            myocsp = [(o, o["covers"][key]) for o in usable_ocsp if key in o["covers"]]
+            if not mine and not myocsp:
                 gaps.append(item["label"])
-                issuers = ", ".join(sorted({c["issuer"] or "?" for c in usable})) or "no usable CRL"
+                issuers = ", ".join(sorted({c["issuer"] or "?" for c in usable_crl})) or "no usable CRL"
                 self.cannot_decide("  revocation: the supplied revocation material does not speak for %s — that "
                                    "certificate was issued by %s, and the usable material was issued by %s. Its "
                                    "revocation status is NOT checked, and this is not a statement that it is "
-                                   "unrevoked (§10.3 MA-70)" % (item["label"], cert.get("issuer"), issuers))
+                                   "unrevoked (§10.3 MA-70)"
+                                   % (item["label"], cert.get("issuer"), issuers)
+                                   + (". The supplied OCSP response(s) speak for %s"
+                                      % (", ".join(sorted({cov["label"] for o in usable_ocsp
+                                                           for cov in o["covers"].values()})) or
+                                         "no certificate in this chain") if usable_ocsp else ""))
                 self.rev_rows.append((item["label"], "NOT spoken for by the supplied material"))
+                est.append((item["label"], "nothing — no supplied material speaks for it"))
                 continue
             hit = None
             for c in mine:
@@ -1358,49 +1693,112 @@ class Verifier:
                 if entry:
                     hit = (c, entry)
                     break
-            if hit:
-                c, (when, reason) = hit
+            bad = [(o, cov["entry"]) for o, cov in myocsp if cov["entry"]["status"] == "revoked"]
+            unknown = [(o, cov["entry"]) for o, cov in myocsp if cov["entry"]["status"] == "unknown"]
+            good = [(o, cov["entry"]) for o, cov in myocsp if cov["entry"]["status"] == "good"]
+            if hit or bad:
                 revoked += 1
+                said, rows = [], []
+                if hit:
+                    c, (when, reason) = hit
+                    said.append("the supplied CRL %s lists serial %s as revoked with a revocation date of %s and "
+                                "the reason %s" % (os.path.relpath(c["path"]), cert.get("serial"), when, reason))
+                    rows.append("REVOKED by %s — revocation date %s, reason %s (serial %s)"
+                                % (os.path.relpath(c["path"]), when, reason, cert.get("serial")))
+                for o, entry in bad:
+                    when = entry["revtime"].strftime(ISO) if entry["revtime"] else "<none stated>"
+                    said.append("the supplied OCSP response %s reports serial %s as revoked, with a revocation "
+                                "date of %s and the reason %s (responder %s, thisUpdate %s, nextUpdate %s)"
+                                % (os.path.relpath(o["path"]), cert.get("serial"), when, entry["reason"] or "<none stated>",
+                                   o["responder"] or "?", entry["this"].strftime(ISO) if entry["this"] else "?",
+                                   entry["next"].strftime(ISO) if entry["next"] else "?"))
+                    rows.append("REVOKED by %s — revocation date %s, reason %s (serial %s)"
+                                % (os.path.relpath(o["path"]), when, entry["reason"] or "<none stated>",
+                                   cert.get("serial")))
+                self.rev_rows.append((item["label"], "; ".join(rows)))
+                est.append((item["label"], "REVOKED — see refusals"))
+                self.refuse("revocation: %s is REVOKED — %s. Revocation material the verifier was given says this "
+                            "certificate was revoked, so the seal it made is refuted by the evidence "
+                            "(§9.3 MA-64, §10.3 MA-70)%s"
+                            % (item["label"], "; and ".join(said),
+                               "; a 'good' from other supplied material does not cancel that — a positive "
+                               "statement of revocation is refused, not weighed" if good else ""))
+            elif unknown:
+                unknowns.append(item["label"])
+                o, entry = unknown[0]
                 self.rev_rows.append((item["label"],
-                                      "REVOKED by %s — revocation date %s, reason %s (serial %s)"
-                                      % (os.path.relpath(c["path"]), when, reason, cert.get("serial"))))
-                self.refuse("revocation: %s is REVOKED — the supplied CRL %s lists serial %s as revoked with a "
-                            "revocation date of %s and the reason %s. Revocation material the verifier was given "
-                            "says this certificate was revoked, so the seal it made is refuted by the evidence "
-                            "(§9.3 MA-64, §10.3 MA-70)"
-                            % (item["label"], os.path.relpath(c["path"]), cert.get("serial"), when, reason))
+                                      "the supplied OCSP response %s reports %r — NOT a check"
+                                      % (os.path.relpath(o["path"]), entry["status"])))
+                est.append((item["label"], "nothing — the responder answered 'unknown', which is not a check"))
+                self.cannot_decide("  revocation: the supplied OCSP response %s answered 'unknown' for %s — a "
+                                   "responder that does not know the certificate establishes nothing about it. "
+                                   "That certificate's revocation status is NOT checked, and this is not a "
+                                   "statement that it is unrevoked (§10.3 MA-70)"
+                                   % (os.path.relpath(o["path"]), item["label"]))
             else:
                 clean += 1
-                self.rev_rows.append((item["label"],
-                                      "not listed on %s" % ", ".join(os.path.relpath(c["path"]) for c in mine)))
+                rows = []
+                if mine:
+                    rows.append("not listed on %s"
+                                % ", ".join(os.path.relpath(c["path"]) for c in mine))
+                for o, cov in myocsp:
+                    entry = cov["entry"]
+                    rows.append("reported %r by the OCSP response %s (thisUpdate %s, nextUpdate %s)"
+                                % (entry["status"], os.path.relpath(o["path"]),
+                                   entry["this"].strftime(ISO) if entry["this"] else "?",
+                                   entry["next"].strftime(ISO) if entry["next"] else "?"))
+                self.rev_rows.append((item["label"], "; ".join(rows)))
+                est.append((item["label"], "checked and clean, from %s" % "; ".join(
+                    [os.path.relpath(c["path"]) for c in mine]
+                    + [os.path.relpath(o["path"]) for o, _cov in myocsp])))
 
+        self.rev_established = est
         checked = clean + revoked
-        unusable = [c for c in crls if c["state"]]
+        unusable = [m for m in material if m["state"]]
         if revoked:
             self.rev_state = ("REFUSED — %d of %d certificate(s) in the chain is REVOKED by the supplied material "
                               "(see refusals)%s"
-                              % (revoked, checked + len(gaps),
+                              % (revoked, checked + len(gaps) + len(unknowns),
                                  "; the material also does not speak for %d (%s)" % (len(gaps), ", ".join(gaps))
                                  if gaps else ""))
-        elif gaps:
-            self.rev_state = ("checked %d of %d certificate(s) in the chain — the supplied material does not speak "
-                              "for %d (%s), so the run cannot decide revocation%s"
-                              % (checked, checked + len(gaps), len(gaps), ", ".join(gaps),
-                                 "; %d supplied CRL(s) could not be used at all (see 'not decidable')"
+        elif gaps or unknowns:
+            bits = []
+            if gaps:
+                bits.append("the supplied material does not speak for %d (%s)" % (len(gaps), ", ".join(gaps)))
+            if unknowns:
+                bits.append("the supplied OCSP response(s) answer 'unknown' for %d (%s)"
+                            % (len(unknowns), ", ".join(unknowns)))
+            self.rev_state = ("checked %d of %d certificate(s) in the chain — %s, so the run cannot decide "
+                              "revocation%s"
+                              % (checked, checked + len(gaps) + len(unknowns), " and ".join(bits),
+                                 "; %d supplied material file(s) could not be used at all (see 'not decidable')"
                                  % len(unusable) if unusable else ""))
         elif unusable:
-            self.rev_state = "NOT checked — the supplied material is unusable (see 'not decidable')"
+            # an unusable file alongside usable ones does not un-check what WAS
+            # checked: the state says both, and the run is undecidable either way
+            self.rev_state = (
+                "checked %d certificate(s) in the chain CLEAN against the usable material, but %d supplied "
+                "material file(s) are unusable (see 'not decidable'), so the run cannot decide revocation"
+                % (checked, len(unusable)) if checked else
+                "NOT checked — the supplied material is unusable (see 'not decidable')")
         elif checked:
+            summary = ("; ".join(self.material_summary(m)
+                                 for m in usable_crl + usable_ocsp if m["covers"]))
+            tail = ""
+            if usable_ocsp:
+                tail += ("; no supplied OCSP response reports any of them as revoked")
+            if anchors:
+                tail += (" (%d supplied trust anchor(s) are the trust input and are not asked to be revocable)"
+                         % anchors)
             self.rev_state = ("checked CLEAN — %d certificate(s) in the chain checked against %s; no entry lists "
-                              "any of them as revoked%s"
-                              % (checked, "; ".join(self.crl_summary(c) for c in usable),
-                                 " (%d supplied trust anchor(s) are the trust input and are not asked to be "
-                                 "revocable)" % anchors if anchors else ""))
+                              "any of them as revoked%s" % (checked, summary, tail))
         else:
             self.rev_state = "NOT checked — no certificate in the chain could be checked against the supplied material"
+        used = [m for m in usable if m["covers"]]
         self.rev_armed_text = REV_ARMED_UNCHECKABLE % (
-            "; ".join(self.crl_summary(c) for c in usable) if usable
-            else "no usable CRL was supplied (%s)" % ", ".join(os.path.relpath(c["path"]) for c in crls))
+            "; ".join(self.material_summary(m) for m in used) if used
+            else "no usable revocation material was supplied (%s)"
+                 % ", ".join(os.path.relpath(m["path"]) for m in material))
 
     # ── LTV, reported and never validated ─────────────────────────────────
     def check_ltv(self):
@@ -1427,6 +1825,12 @@ class Verifier:
 def norm_serial(serial):
     """a certificate serial and a CRL entry serial compared the same way"""
     return (serial or "").replace(":", "").strip().lower().lstrip("0") or "0"
+
+
+def cert_key(cert):
+    """a certificate's identity in this run: serial, subject and issuer, compared
+    the same way on both sides of a coverage test"""
+    return (norm_serial(cert.get("serial")), norm_dn(cert.get("subject")), norm_dn(cert.get("issuer")))
 
 
 def norm_dn(dn):
@@ -1512,6 +1916,13 @@ def read_cert_text(openssl, path):
     }
 
 
+def armed_revocation(args):
+    """whether this run was handed any revocation material at all. Three flags
+    answer one question, so the question is asked in one place: a run that was
+    handed an OCSP response is as armed as one handed a CRL."""
+    return bool(args.revocation or args.ocsp_response or args.revocation_dir)
+
+
 def residual_stderr():
     sys.stderr.write("\n%s\n%s\n\n" % (RESID1, RESID2))
 
@@ -1564,9 +1975,31 @@ def usage(stream=sys.stdout):
                          what checking the whole chain takes. No network path
                          exists in this tool — the material is an input YOU
                          supply, nothing is fetched, and an OCSP responder is
-                         never contacted. OCSP is not implemented at all: not
-                         even a supplied OCSP response is read. Without this
-                         option revocation is NOT checked and the report says so
+                         never contacted
+  --ocsp-response FILE   an OCSP response (DER, or PEM with the standard
+                         header) to check revocation against, offline. The
+                         response is a FILE this run was handed: it is read with
+                         `openssl ocsp -respin`; no request is sent, no responder
+                         is contacted, and nothing is fetched. Repeatable. Its own
+                         signature is verified against a signer the
+                         certificate's issuer authorised and whose chain reaches
+                         a supplied anchor; a 'revoked' status REFUSES (exit 1),
+                         a 'good' status is checked and clean FOR THE
+                         CERTIFICATE IT NAMES, and 'unknown' is not a check
+  --revocation-dir DIR   a directory of revocation material: every regular file
+                         in it that parses as a CRL or as an OCSP response is
+                         applied by the rules above. A file that parses as
+                         neither is REPORTED and makes the run undecidable — it
+                         is never skipped, because material this verifier cannot
+                         read is material it cannot claim to have checked.
+                         Repeatable, and combinable with the two flags above
+  --require-timestamp    refuse a container that carries no RFC 3161 token
+  --debug                print the openssl invocations this run made
+  -h, --help             this text
+
+  Revocation material is never fetched. Without --revocation,
+  --ocsp-response and --revocation-dir, revocation is NOT checked and the report
+  says so.
   --require-timestamp    refuse a container that carries no RFC 3161 token
   --debug                print the openssl invocations this run made
   -h, --help             this text
@@ -1581,22 +2014,26 @@ exit codes
                      is a CA, any signer or chain certificate that was not valid
                      at the claimed time, a token from a TSA certificate that was
                      not, a seal the operator co-signed, or a certificate that a
-                     supplied CRL lists as revoked
+                     supplied CRL lists — or a supplied OCSP response reports —
+                     as revoked
   2  USAGE/UNREADABLE  bad invocation, an unreadable input, or a package that
                      does not claim the P3 profile
   3  CANNOT DECIDE   an input this verifier needs to decide was not supplied or
                      cannot be used: the container, trust anchors,
                      --operator-cert, a verified timestamp to establish the
                      claimed time, or revocation material that is expired, not
-                     yet valid, of unverifiable signature, or that speaks for
-                     only part of the chain
+                     yet valid, of unverifiable signature, of unsuccessful
+                     response status, that answers 'unknown', that parses as
+                     neither a CRL nor an OCSP response, or that speaks for only
+                     part of the chain
 
 Every signer of every signature entry is enumerated and checked: the operator
 exclusion and the certificate-date check are made over the whole signer set, not
-over the first certificate found. Revocation is checked ONLY against CRLs you
-supply with --revocation: this verifier never downloads one, never contacts an
-OCSP responder, and never validates long-term validation material. Every run says
-so in its own report, in the state the run is actually in.
+over the first certificate found. Revocation is checked ONLY against the
+material you supply with --revocation, --ocsp-response and --revocation-dir:
+this verifier never downloads a CRL, never requests an OCSP response, never
+contacts a responder, and never validates long-term validation material. Every
+run says so in its own report, in the state the run is actually in.
 """)
     stream.write("residual (§3.3)\n%s\n%s\n" % (RESID1, RESID2))
 
@@ -1610,6 +2047,19 @@ def main(argv=None):
                     help="a CRL (PEM or DER) to check revocation against, offline. Repeatable: a chain with "
                          "more than one issuing CA needs one CRL per CA, and a certificate no supplied CRL "
                          "speaks for makes the run undecidable rather than counting as unrevoked")
+    ap.add_argument("--ocsp-response", dest="ocsp_response", action="append", metavar="FILE",
+                    help="an OCSP response (DER or PEM, as `openssl ocsp` writes one) to check revocation "
+                         "against, offline: the response is a FILE this run was handed, never a query it made. "
+                         "Repeatable, one per responder answer. Its own signature is verified against a signer "
+                         "the certificate's issuer authorised that chains to a supplied anchor; a 'revoked' "
+                         "status refuses the container, a 'good' status is checked and clean FOR THE CERTIFICATE "
+                         "IT NAMES, and 'unknown' is not a check")
+    ap.add_argument("--revocation-dir", dest="revocation_dir", action="append", metavar="DIR",
+                    help="a directory of revocation material: every regular file in it that parses as a CRL or "
+                         "an OCSP response is applied by the rules above, and a file that parses as neither is "
+                         "REPORTED and makes the run undecidable rather than being skipped. Repeatable, and "
+                         "combinable with --revocation and --ocsp-response. Separate from --revocation because "
+                         "that flag's contract is a FILE")
     ap.add_argument("--require-timestamp", dest="require_timestamp", action="store_true")
     ap.add_argument("--debug", action="store_true")
     ap.add_argument("-h", "--help", action="store_true")
@@ -1686,17 +2136,20 @@ def main(argv=None):
                    else "NOT checked — missing input: --container")
         for key in ("structure", "signature", "seal", "timestamp", "dates", "operator", "revocation"):
             v.layer[key] = missing
-        if args.revocation:
+        if armed_revocation(args):
             # an armed run with no chain: say what was supplied and that nothing
             # was read, rather than leave the unarmed sentence standing
             v.rev_state = ("NOT checked — %s, so no certificate chain exists to check revocation against"
                            % ("the container could not be opened" if args.container is not None
                               else "no container was read"))
-            v.rev_armed_text = ("no CRL was read for this run: --revocation was supplied (%s) and %s, so there "
-                                "was no chain to check against it. No network path exists in this tool — nothing "
-                                "is fetched, no CRL is downloaded, no OCSP responder is contacted — and no "
-                                "certificate's revocation status is reported as checked."
-                                % (", ".join(os.path.relpath(p) for p in args.revocation),
+            v.rev_armed_text = ("no revocation material was read for this run: it was supplied (%s) and %s, so "
+                                "there was no chain to check against it. No network path exists in this tool — "
+                                "nothing is fetched, no CRL is downloaded, no OCSP response is requested, no "
+                                "responder is contacted — and no certificate's revocation status is reported as "
+                                "checked."
+                                % (", ".join(os.path.relpath(p) for p in
+                                             (list(args.revocation or []) + list(args.ocsp_response or [])
+                                              + list(args.revocation_dir or []))),
                                    "the container could not be opened" if args.container is not None
                                    else "no container was supplied"))
 
@@ -1706,7 +2159,7 @@ def main(argv=None):
     producer = mf.get("producer") or {}
     subject = mf.get("subject") or {}
     prev = mf.get("prev") or {}
-    o("%s — MARTELAGE-0.1 P3 verifier (%s)" % (PROG, PROFILE))
+    o("%s — MARTELAGE-0.2 P3 verifier (%s)" % (PROG, PROFILE))
     o()
     o("package      %s" % args.package)
     o("digest       %s   (sha256 of package.json: this is the package digest)" % v.pkdigest)
@@ -1865,13 +2318,23 @@ def main(argv=None):
     # revocation — from the CRLs this run was handed, and nothing else
     o()
     o("revocation")
-    if not args.revocation:
-        o("  NOT checked — --revocation was not supplied. No CRL is read, nothing is fetched, and no")
-        o("  OCSP responder is contacted: this verifier has no network path at all.")
+    if not armed_revocation(args):
+        o("  NOT checked — no revocation material was supplied (no --revocation, no --ocsp-response and no")
+        o("  --revocation-dir). No CRL and no OCSP response is read, nothing is fetched, and no OCSP responder")
+        o("  is contacted: this verifier has no network path at all.")
     else:
-        o("  supplied      %s   (offline: read from this file, never fetched)" % ", ".join(args.revocation))
+        o("  supplied      (every file below is read from disk, offline: nothing is fetched, no OCSP")
+        o("               response is requested, and no responder is contacted)")
+        for flag, paths in (("--revocation", args.revocation), ("--ocsp-response", args.ocsp_response),
+                            ("--revocation-dir", args.revocation_dir)):
+            for path in (paths or []):
+                o("  %-13s %s" % (flag, path))
         for label, state in getattr(v, "rev_rows", []):
             o("  - %s: %s" % (label, state))
+        if getattr(v, "rev_established", None):
+            o("  therefore established, per certificate:")
+            for label, what in v.rev_established:
+                o("  - %s: %s" % (label, what))
         if have:
             o("  verdict       %s" % getattr(v, "rev_state", "not reached"))
         else:
@@ -1912,7 +2375,7 @@ def main(argv=None):
     o("  p3.7     long-term validation NOT checked by any run of this verifier — reported present or absent only")
     if not have:
         rev_layer = v.layer.get("revocation", "NOT checked — missing input: --container")
-    elif not args.revocation:
+    elif not armed_revocation(args):
         rev_layer = ("NOT checked by any run of this verifier — no CRL is read, no OCSP responder is contacted")
     else:
         rev_layer = v.layer.get("revocation", "not reached")

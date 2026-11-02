@@ -1,0 +1,3 @@
+This file is not revocation material. It is a text file that a well-meaning
+operator left in the directory beside the CRLs, and a verifier that reads every
+file it was handed must say so rather than skip it.

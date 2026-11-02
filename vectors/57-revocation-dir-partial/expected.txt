@@ -1,0 +1,60 @@
+vector: 57-revocation-dir-partial
+what:   a DIRECTORY of revocation material — both kinds in one input — where one file speaks for a
+        certificate of this chain and the other speaks for one that is not in it. material/ holds
+        root A's CRL (which speaks for intermediate A) and an OCSP response about signerC, a
+        certificate this container never mentions. The sealer is therefore spoken for by NOTHING,
+        and the run says which certificate that is. The directory is the input: what it holds is
+        read file by file, and each file is reported by what it spoke for
+run:    validator/p3-verify --container vectors/57-revocation-dir-partial/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --revocation-dir vectors/57-revocation-dir-partial/material \
+          vectors/57-revocation-dir-partial/pkg
+exit:   3
+also:   validator/p3-verify --container vectors/57-revocation-dir-partial/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --revocation-dir vectors/57-revocation-dir-partial/material \
+          --revocation vectors/pki/crl-intermediateA-clean.pem \
+          vectors/57-revocation-dir-partial/pkg   ->  exit 0
+        the CONTROL, and the arm that says the two flags combine: the same directory, plus ONE
+        CRL for the CA that issued the sealer. Every certificate in the chain is now spoken for
+        — the sealer by the flag, the intermediate by the directory — and the run goes from
+        undecidable to checked clean. The response about signerC is still reported as covering
+        nothing here, and is still never counted
+        validator/p3-verify --container vectors/57-revocation-dir-partial/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --revocation vectors/pki/crl-rootA-clean.pem \
+          --revocation vectors/pki/crl-intermediateA-clean.pem \
+          --ocsp-response vectors/pki/ocsp-signerA-good.der \
+          vectors/57-revocation-dir-partial/pkg   ->  exit 0
+        the SECOND control: the same three statements supplied as three FILES rather than as a
+        directory. The directory form changes how the material is named, not what it establishes
+must print:
+  - "--revocation-dir vectors/57-revocation-dir-partial/material"
+  - "crl-rootA-clean.pem: usable CRL (PEM)"
+  - "ocsp-signerC-good.der: usable OCSP response (DER), covering NOTHING in this chain"
+  - "it names serial 0A14 (good), none of which is a certificate in this chain"
+  - "NOT spoken for by the supplied material"
+  - "the supplied revocation material does not speak for the signer CN=Witness AG"
+  - "was issued by CN=martelage test intermediate A"
+  - "the usable material was issued by CN=martelage test root A"
+  - "Its revocation status is NOT checked, and this is not a statement that it is unrevoked"
+  - "checked 1 of 2 certificate(s) in the chain"
+  - "CANNOT DECIDE"
+  - "checked and clean, from vectors/57-revocation-dir-partial/material/crl-rootA-clean.pem"
+  - "checked CLEAN — 2 certificate(s) in the chain checked against"
+                                                       (on the control runs, NOT on this one)
+requirements exercised: MA-64, MA-70, MA-71
+why it fails without the fix: MEASURED. The pre-fix verifier has no --revocation-dir option at all
+        (exit 2, "unknown option --revocation-dir"). With the option added and the coverage test
+        dropped — every response applied to whatever certificate has the same serial, and a
+        covering-nothing file treated as a check for everyone — this container reports exit 0
+        CONFORMANT: the sealer is covered by a response about somebody else, and the report says
+        "checked CLEAN". The must-print "covering NOTHING in this chain" and the exit code 3 are
+        the difference
+what this vector does NOT claim: that a response about another certificate is worthless — it is
+        worth what it says about the certificate it NAMES, and this chain holds none of them. Nor
+        that a directory's files are interchangeable: each is reported by what it spoke for, and
+        a certificate no file speaks for is named rather than counted

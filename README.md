@@ -1,8 +1,15 @@
 # Martelage — the Evidence Package standard
 
-**Status: draft 0.1.** This repository holds the standard, its reference validator, and the test
-vectors that prove the validator can fail. Nothing here is committed to a registry, published by a
+**Status: draft 0.2.** This repository holds the standard, its reference validators, and the test
+vectors that prove the validators can fail. Nothing here is committed to a registry, published by a
 standards body, or certified by anyone.
+
+The document version is `martelage 0.2` and the wire version is still `"v":1`, so a package written
+for the previous draft is a `0.2` package: nothing in the format moved. What moved is the verifier
+surface, and §11.7 records it — including that the bump was published one commit late, inside the
+`v0.2.0` tag message rather than in the text it names. The text keeps its filename,
+`spec/MARTELAGE-0.1.md`, because a draft's filename is a path that every link and every staging step
+resolves and its identifier is the version: §11.7 and the file's own header say so.
 
 **The site:** `site/` — the explanatory pages — deploys to GitHub Pages at
 <https://jmars.github.io/martelage/> via [`.github/workflows/pages.yml`](.github/workflows/pages.yml)
@@ -24,11 +31,11 @@ reader cannot credit the weakest layer with the strength of the strongest.
 
 | file | what it is |
 |---|---|
-| `spec/MARTELAGE-0.1.md` | the standard. Every normative requirement carries an identifier (`MA-1` … `MA-82`) so a conformance report can cite it. |
+| `spec/MARTELAGE-0.1.md` | the standard. Every normative requirement carries an identifier (`MA-1` … `MA-83`) so a conformance report can cite it. |
 | `validator/martelage-verify` | the reference validator: POSIX shell + the set §10.1 names (`awk`, `sed`, `grep`, `cmp`, `sort`, `sha256sum`, `tr`, `cut`, `head`, `tail`, `wc`, `find`, `mktemp`, `rm`, `cat`). No network, no interpreter beyond those, no keys, no service, no producer. |
 | `validator/p3-verify` | the P3 profile verifier (§9.3 `p3-eidas-qualified-seal-asic-e`): python3 and the `openssl` binary, no third-party library and no network path. Verifies an ASiC-E container's CAdES seal (the detached manifest-signature construction, checked as the construction before anything else is accused), **every signer of every signature entry** and the whole chain each one reaches, the digests it covers, an RFC 3161 token with the TSA's own chain, and revocation **only against CRLs you hand it** with `--revocation` — and prints what it cannot check on every run. A second implementation: `martelage-verify` keeps its zero-dependency property untouched. |
-| `tools/` | `mkpki.sh` (the throwaway test PKI), `mkcrl.sh` (the CRLs the revocation vectors hand the verifier), `mkasic.py` (the ASiC-E container builder), `mkp3.sh` (rebuilds the P3 vectors), and the two scripts that render the site's print artifact. |
-| `vectors/` | fifty-two hand-made packages and their fixtures, with their expected results. Constructed for the standard; none is exported from a producer system. |
+| `tools/` | `mkpki.sh` (the throwaway test PKI), `mkcrl.sh` (the CRLs the revocation vectors hand the verifier), `mkocsp.sh` (the OCSP responses they hand it), `mkasic.py` (the ASiC-E container builder), `mkp3.sh` (rebuilds the P3 vectors), and the two scripts that render the site's print artifact. |
+| `vectors/` | fifty-eight hand-made packages and their fixtures, with their expected results. Constructed for the standard; none is exported from a producer system. |
 | `LICENSE` | the licence split: specification text CC BY 4.0, code Apache-2.0. |
 
 The standard is published on its own. It defines concepts — a record envelope, a stream, a package
@@ -79,9 +86,11 @@ Code 3 exists because an instrument that cannot return "undecided" returns somet
 implementation**: it shares no code with `martelage-verify`, which is unchanged, and it runs under
 `python3` and shells out to the `openssl` binary for every cryptographic operation — python's standard
 library has no CMS or X.509 implementation, and there is no third-party crypto library on this host.
-It has no network path at all: nothing is downloaded, no URL is opened, and no OCSP responder is
-contacted. Revocation is checked only against CRLs the person running it **hands it** with
-`--revocation`, and without that option revocation is not checked and the report says so.
+It has no network path at all: nothing is downloaded, no URL is opened, no OCSP request is written
+and no OCSP responder is contacted. Revocation is checked only against the material the person
+running it **hands it** — `--revocation FILE` for a CRL, `--ocsp-response FILE` for an OCSP response,
+`--revocation-dir DIR` for a directory of both — and without any of them revocation is not checked
+and the report says so.
 
 ```sh
 validator/p3-verify \
@@ -97,7 +106,9 @@ validator/p3-verify \
 | `--container FILE` | the ASiC-E container — the evidence itself. Without it the seal is CANNOT DECIDE, not refused |
 | `--trust-anchors DIR` | a directory of PEM anchors: what the signer's chain is checked against |
 | `--operator-cert FILE` | the operator's own certificate, so that "a legal person OTHER than the operator" (§9.3 limit i) is *checked* rather than assumed — over **every** signer of every signature entry, because the operator only has to be one of them. Without it that clause is CANNOT DECIDE: this verifier never assumes the signer is someone else |
-| `--revocation FILE` | a CRL — PEM or DER — to check revocation against, **offline**: the material is an input you supply, and this tool never fetches one. Repeatable, because a chain with more than one issuing CA needs one CRL per CA. With it, every certificate in the established chain that a supplied CRL speaks for is checked, a listed certificate refuses the container, and a certificate no supplied CRL speaks for leaves the run undecidable rather than counted as unrevoked. Without it, revocation is NOT checked. **CRL only**: OCSP is not implemented here at all, not even from a supplied OCSP response |
+| `--revocation FILE` | a CRL — PEM or DER — to check revocation against, **offline**: the material is an input you supply, and this tool never fetches one. Repeatable, because a chain with more than one issuing CA needs one CRL per CA. With it, every certificate in the established chain that a supplied CRL speaks for is checked, a listed certificate refuses the container, and a certificate no supplied CRL speaks for leaves the run undecidable rather than counted as unrevoked. Without it, revocation is NOT checked |
+| `--ocsp-response FILE` | an OCSP response — DER, or PEM with the standard header — to check revocation against, **offline**: the response is a file you were handed, read with `openssl ocsp -respin`, never a query this tool made. Repeatable. Its own signature is verified against a signer the certificate's issuer authorised (the issuer itself, or a responder the issuer issued) whose chain reaches a supplied anchor, and the response's CertID must name the certificate being checked. A `revoked` status **refuses** the container (exit 1), naming the certificate, the responder, `thisUpdate`/`nextUpdate`, the revocation time and the reason; a `good` status is **checked and clean for the certificate it names** and for no other; `unknown`, an expired or not-yet-valid window, an unverifiable signer, an unsuccessful response status, or a response that names no certificate of this chain is its own stated outcome and never reads as a pass |
+| `--revocation-dir DIR` | a directory of revocation material: every regular file in it that parses as a CRL or as an OCSP response is applied by the rules above, and the report names, per certificate, which supplied file covered it. A file that parses as neither is **reported and makes the run exit 3** — a verifier that silently skips material it was handed is claiming more than it checked. Repeatable, and combinable with the two flags above. A separate flag from `--revocation` because that flag's published contract is a single FILE |
 | `--require-timestamp` | refuse a container that carries no RFC 3161 token |
 
 Exit codes are the same four the standard defines (§10.3 MA-70), with P3's meanings:
@@ -105,9 +116,9 @@ Exit codes are the same four the standard defines (§10.3 MA-70), with P3's mean
 | code | meaning |
 |---|---|
 | `0` | **CONFORMANT** — the container is well-formed (no duplicate entry name, every covered path inside the package), the CAdES signature verifies over the ASiC manifest, every signer of every signature entry chains to a supplied anchor and none is a CA, every sealed digest is the package's, the token verified, every certificate the run established (every signer, the whole chain, the TSA's chain) was valid at the claimed time, and no signer's key is the operator's |
-| `1` | **NON-CONFORMANT** — a malformed container (a wrong `mimetype`, a duplicate ZIP entry name, a covered path that leaves the package, a signature entry whose content is **embedded** rather than detached over the manifest), a sealed digest that moved, a signature that does not verify, a signer that is a CA, any signer or chain certificate that was not valid at the claimed time, a token from a TSA that was not, a seal made with the operator's own key **or co-signed with it**, a certificate a supplied CRL lists as revoked, or `--require-timestamp` given with no token |
+| `1` | **NON-CONFORMANT** — a malformed container (a wrong `mimetype`, a duplicate ZIP entry name, a covered path that leaves the package, a signature entry whose content is **embedded** rather than detached over the manifest), a sealed digest that moved, a signature that does not verify, a signer that is a CA, any signer or chain certificate that was not valid at the claimed time, a token from a TSA that was not, a seal made with the operator's own key **or co-signed with it**, a certificate a supplied CRL lists — or a supplied OCSP response reports — as revoked, or `--require-timestamp` given with no token |
 | `2` | **USAGE OR UNREADABLE** — a bad invocation, an unreadable input, or a package that does not claim P3 |
-| `3` | **CANNOT DECIDE** — an input was not supplied or cannot be used: the container, trust anchors, `--operator-cert`, a verified timestamp to establish the claimed time, or revocation material that is expired, not yet valid, of unverifiable signature, or that speaks for only part of the chain |
+| `3` | **CANNOT DECIDE** — an input was not supplied or cannot be used: the container, trust anchors, `--operator-cert`, a verified timestamp to establish the claimed time, or revocation material that is expired, not yet valid, of unverifiable signature, of unsuccessful response status, that answers `unknown`, that parses as neither a CRL nor an OCSP response, or that speaks for only part of the chain |
 
 **What it verifies**, in the order it verifies it: first the **construction** — one construction is
 implemented, a detached CAdES over the exact bytes of `META-INF/manifest.xml`, and a signature entry
@@ -130,20 +141,27 @@ token, if present, verifies over one of the signature values (`openssl ts -verif
 it establishes is the time **every certificate date is checked against** — every signer, every
 certificate in the chain each signer reaches, and the timestamping authority's own chain, at the
 token's genTime and never at this host's clock; that **no** signer's public key is the
-operator's; and, **when `--revocation` is given**, that every supplied CRL is a CRL (PEM or DER), that
-its own signature verifies under a certificate this run holds, that its window is current, and that no
-certificate in the established chain it speaks for is listed on it — a listed certificate refuses the
-container, naming the certificate, the CRL, the revocation date and the reason. Nothing is fetched, at
-any point: the CRLs are files the verifier was handed.
+operator's; and, **when revocation material is given**, that every supplied CRL is a CRL (PEM or
+DER), that its own signature verifies under a certificate this run holds, that its window is current,
+and that no certificate in the established chain it speaks for is listed on it — and that every
+supplied OCSP response's status, signer and window are read and its own signature verified against a
+signer the certificate's issuer authorised, before its answer is used. A listed or reported-revoked
+certificate refuses the container, naming the certificate, the material, the revocation date and the
+reason; a `good` is claimed for the certificate the response names and for no other; and material that
+contradicts itself about one certificate — one file saying revoked, another saying good — **refuses**,
+because a positive statement of revocation is not cancelled by a `good` from someone else, and the run
+names both files. Nothing is
+fetched, at any point: every file is material the verifier was handed.
 
 **What it does not check, on any run.** Every run prints a section headed `not checkable by this
 verifier (every run)` before its verdict, in the state the run is actually in: revocation (unarmed,
-the entry says no CRL is read and no OCSP responder is contacted — there is no network path in the
-tool, so "valid at the claimed time" means the certificate dates and never revocation status; armed, it
-says exactly which CRLs were used, with their issuer, `thisUpdate`, `nextUpdate` and entry count, and
-that a certificate no supplied CRL speaks for has no revocation status here, that a revocation
-published after a CRL's `nextUpdate` is invisible, and that long-term validation is still never
-validated); long-term validation (LTV material is reported present or absent
+the entry says no CRL and no OCSP response is read and no OCSP responder is contacted — there is no
+network path in the tool, so "valid at the claimed time" means the certificate dates and never
+revocation status; armed, it says exactly which material was used, with each CRL's issuer,
+`thisUpdate`, `nextUpdate` and entry count and each response's signer, status and window, and that a
+certificate no supplied material speaks for has no revocation status here, that a revocation published
+after a CRL's or a response's `nextUpdate` is invisible, that a supplied status is the status **now**
+and not at the claimed time, and that long-term validation is still never validated); long-term validation (LTV material is reported present or absent
 and is never validated); the truth and completeness of the records (§9.3 limit iii); the signer's legal
 identity beyond the subject its certificate claims; whether the certificate was issued for sealing at
 all (this standard defines no key-usage profile for a seal, so the chain is verified with `-purpose
@@ -160,8 +178,9 @@ and the tool says so in its own report, because the EN 319 162-1 multi-file conc
 is not what it parses and it will not report that as verified. A container of another shape is
 **refused**, not absorbed: an embedded-content CMS, the concatenated-digest form and XAdES are all
 shapes this verifier does not implement, and a run that met one says which shape it met. Not a
-revocation service either: `--revocation` checks the CRLs it is handed and nothing else, and there is
-no live OCSP, no CRL download and no long-term-validation checking anywhere in the tool. It does not
+revocation service either: `--revocation`, `--ocsp-response` and `--revocation-dir` check the
+material they are handed and nothing else, and there is no live OCSP, no CRL download, no OCSP request
+and no long-term-validation checking anywhere in the tool. It does not
 make `martelage-verify` verify seals, and a P3 claim handed to the base validator still reports exit 3.
 
 ### The P3 fixtures, and how to rebuild them
@@ -170,22 +189,32 @@ make `martelage-verify` verify seals, and a P3 claim handed to the base validato
 second sealer under the root the vectors withhold, a sealer whose certificate expired in 2021, a
 second sealer under the same intermediate as the first (the two-signer control), an intermediate and a
 TSA certificate with the same keys and subjects as the valid ones but expired in 2021, the operator
-(`CN=Operator GmbH`) and a timestamping authority. **The private keys are committed on
+(`CN=Operator GmbH`), a timestamping authority and two OCSP responders — one issued by intermediate A
+(so its answers are authorised by the CA that issued the certificates it answers about and its chain
+reaches root A), one self-signed, so its answers are signed by a party no supplied anchor vouches
+for. **The private keys are committed on
 purpose** — a vector that cannot be rebuilt from what is in the tree is not reproducible — and they
 are worth exactly nothing; see [`vectors/pki/README.md`](vectors/pki/README.md). Validity dates are
 fixed with `-not_before`/`-not_after`, so the expired-signer vector is expired on any host at any time;
 key material is regenerated on every run, so regenerating the PKI means rebuilding the containers:
 
 ```sh
-sh tools/mkpki.sh      # the test PKI: new keys, the same dates and layout, then the CRLs
+sh tools/mkpki.sh      # the test PKI: new keys, the same dates and layout, then the CRLs and responses
 sh tools/mkcrl.sh      # just the CRLs, from the certificates already in vectors/pki
-sh tools/mkp3.sh       # vectors 34..52: the packages and their containers
+sh tools/mkocsp.sh     # just the OCSP responses, from those certificates and the two responders
+sh tools/mkp3.sh       # vectors 34..58: the packages, their containers and the material directories
 ```
 
-All three run offline and need only `openssl` and `python3`. `tools/mkcrl.sh` writes the CRLs the
-revocation vectors hand the verifier — one per CA in the chain, plus a revoked entry, an expired
-window and a CRL from a CA that issued nothing in the chain, each with its dates fixed for the same
-reason the certificate dates are. `tools/mkasic.py` is the container builder, and its docstring
+All of them run offline, open no port and need only `openssl` and `python3`. `tools/mkcrl.sh` writes
+the CRLs the revocation vectors hand the verifier — one per CA in the chain, plus a revoked entry, an
+expired window and a CRL from a CA that issued nothing in the chain, each with its dates fixed for the
+same reason the certificate dates are. `tools/mkocsp.sh` writes the OCSP responses: one per arm
+(good, revoked, expired, unanchored signer, and one about a certificate that is not in the chain),
+built with `openssl ocsp -index ... -reqin` so no responder is ever contacted, and then **re-dated and
+re-signed** by the same responder key so their thisUpdate/nextUpdate are the same fixed dates the
+CRLs use. That last step is not decoration: `openssl ocsp` stamps a response with the build second and
+refuses a non-positive `-ndays`/`-nmin` (MEASURED on 3.5.3), so a shipped "expired response" is
+impossible without moving the window and re-signing it. `tools/mkasic.py` is the container builder, and its docstring
 states the container shape it produces; `--embedded-content` builds the shape it does **not** produce
 (`-nodetach`), which is what vector 48 refuses.
 
@@ -270,16 +299,40 @@ same thing, plus the requirement identifiers the case exercises.
 | 50b | `50` with intermediate A's CRL in DER form | the same bytes in the other encoding | **2** | **0** |
 | 51 | `51-revocation-wrong-issuer` | a valid CRL from a CA that issued nothing in this chain | **2** | **3** |
 | 52 | `52-revocation-expired` | a CRL whose `nextUpdate` is in 2021: unusable, never a pass | **2** | **3** |
+| 53 | `53-ocsp-revoked` | the sealer's serial is `revoked` in an OCSP response handed in with `--ocsp-response` | **2** | **1** |
+| 53b | `53` with the same responder's "good" response | one status in one response and nothing else | **2** | **0** |
+| 54 | `54-ocsp-good` | the response says `good` for the sealer: checked and clean, naming the certificate it spoke for | **2** | **0** |
+| 54b | `54` with the same response in PEM form | the same bytes in the other encoding | **2** | **0** |
+| 54c | `54` with a response about a certificate not in this chain | a `good` is never carried across to another certificate | **2** | **3** |
+| 55 | `55-ocsp-expired` | a response whose `nextUpdate` is in 2021: unusable, never a pass | **2** | **3** |
+| 56 | `56-ocsp-unanchored-responder` | a `good` signed by a responder that chains to no supplied anchor | **2** | **3** |
+| 57 | `57-revocation-dir-partial` | a directory of both kinds in which one certificate stays uncovered | **2** | **3** |
+| 57b | `57` with one CRL added | the same directory, plus the CA that issued the sealer | **2** | **0** |
+| 58 | `58-revocation-dir-garbage` | a directory holding sufficient material and one file that is not revocation material | **2** | **3** |
+| 58b | `58` with the two real files as flags | the same material without the file that cannot be read | **2** | **0** |
 
 11b is the residual of §7.4.3 in one line: without the predecessor, a dropped record is invisible,
 and the validator says the layer was not armed rather than implying a pass.
 
-Rows 34–52 are the P3 vectors, and they are the first ones run against `validator/p3-verify` rather
+Rows 34–58 are the P3 vectors, and they are the first ones run against `validator/p3-verify` rather
 than `martelage-verify`. Each pair is built so that the two arms differ by exactly one thing — the
 container, the anchor directory, one flag, one key, one byte, one CRL entry — so the exit code is
 decided by the check under test and by nothing else. Row 35 is the one that shows what the profile
 buys: the sealed package and `pkg-moved` are both internally consistent, both report no refusal from
 the base validator, and only the seal can tell them apart.
+
+Rows 53–58 close a third item: revocation is no longer CRL-only. **53–56** are `--ocsp-response` —
+the sealer reported revoked, reported good, reported inside a window that ended in 2021, and reported
+good by a responder that chains to nothing — and they differ from one another only in the response,
+so the four states an OCSP answer can be in are pinned: **refused**, **checked clean for the
+certificate it names**, **not current**, **not establishable**. **57–58** are `--revocation-dir`, the
+directory form: in 57 the directory holds both kinds and covers the intermediate but not the sealer,
+and in 58 it holds material that covers every certificate plus one file that is not revocation
+material at all — so 58's exit 3 is caused by the file that could not be read and by nothing else,
+which its own control (the same two files as flags, exit 0) proves. Rows 53–58 have a **2** in the
+"before" column for the same reason 49–52 do: `--ocsp-response` and `--revocation-dir` did not exist,
+so the invocation ended at "unknown option" and the report said on every run that OCSP was not
+implemented at all, not even from a supplied response.
 
 Rows 48–52 close two of the owner's own items. **48** is the shape: the same container built with
 `openssl cms -sign ... -nodetach`, whose signature carries its content embedded instead of leaving it
@@ -413,6 +466,11 @@ armed and every check passes. Measured on this tree:
 | a CRL entry is compared to the certificates in the chain | 49 | 1 | **0** | 0 |
 | the coverage test — a CRL only speaks for the CA that issued it | 51 | 3 | **0** | 0 |
 | a CRL's window is checked (`nextUpdate`, `thisUpdate`) | 52 | 3 | **0** | 0 |
+| a supplied OCSP response's status is compared to the certificate | 53 | 1 | **0** | 0 |
+| the response's CertID is matched — a `good` is not carried to another certificate | 54, 57 | 3 | **0** | 0 |
+| the response's own window is checked (`thisUpdate`, `nextUpdate`) | 55 | 3 | **0** | 0 |
+| the response's signer is verified and its chain required to reach an anchor | 56 | 3 | **0** | 0 |
+| a file in a `--revocation-dir` that parses as neither is reported | 58 | 3 | **0** | 0 |
 | the unarmed revocation state is printed as unarmed | 50 (unarmed) | names the unarmed state | **prints "checked CLEAN" with nothing checked (still exit 0)** | 0 |
 
 The last row is the shape the previous review found broken for the signer set, and it is here on
@@ -463,7 +521,7 @@ export binary on this host, so a real export could not be manufactured. The payl
 vectors is the grammar that emitter writes — verified against its source, not against a run — but
 that is a reading of a document, not a measurement of a package, and it is marked as such in Annex A.
 
-## What "draft 0.1" means here
+## What "draft 0.2" means here
 
 - The normative requirements are complete enough to implement against and to cite: the validator in
   this repository is one implementation of them, and the vectors are its evidence.

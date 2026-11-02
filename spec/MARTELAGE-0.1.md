@@ -1,8 +1,12 @@
-# MARTELAGE-0.1 — The Evidence Package Standard
+# MARTELAGE-0.2 — The Evidence Package Standard
 
-**Status:** draft 0.1 — published for adoption and criticism. Not yet a stable standard.
-**Identifier of this document:** `martelage 0.1`. The wire identifier of the package format it defines is
-`"standard":"martelage","v":1`.
+**Status:** draft 0.2 — published for adoption and criticism. Not yet a stable standard.
+**Identifier of this document:** `martelage 0.2`. The wire identifier of the package format it defines is
+`"standard":"martelage","v":1` — unchanged by this document's version, and §11.7 says why.
+**Filename:** this text lives in `spec/MARTELAGE-0.1.md` and keeps that name. A draft's filename is a
+*path* — the thing every link, the site's staging step and the vectors' pointers resolve — and the
+identifier above is the *version*. Renaming the path to track the version would break every one of
+those references for a document whose identifier already states which version it is.
 **Licence:** this specification text is licensed CC BY 4.0; the reference validator and all code in
 this repository are licensed Apache-2.0. See `LICENSE`.
 **Editors:** the Martelage authors. See `README.md` for how to raise a defect against this text.
@@ -84,7 +88,7 @@ trusted by the producer to be anything in particular.
 
 ## 2. Conformance
 
-**2.1 What conformance is.** A package is conformant with MARTELAGE-0.1 when all of the following hold.
+**2.1 What conformance is.** A package is conformant with MARTELAGE-0.2 when all of the following hold.
 There is no other definition, no level above it and no level below it. — **MA-6**
 
 1. It is a directory containing `package.json` and at least one record stream file (§3).
@@ -105,7 +109,7 @@ self-consistent*; it says nothing about truth or completeness (§7.2.3, §10.7).
 the anchor is an optional slot inside it (§9.1). — **MA-8**
 
 **2.4 How a third party claims conformance.** By publishing a statement, in its own name, that its
-producer emits packages conformant with `martelage 0.1`, and naming the requirements it relies on and any
+producer emits packages conformant with `martelage 0.2`, and naming the requirements it relies on and any
 it does not satisfy with the reason. No registration, no permission and no fee is required. A
 conformance statement is a claim under the claimant's own name; this standard does not certify
 anyone. Annex C is the template. — **MA-9**
@@ -753,11 +757,44 @@ unavailable field. — **MA-79**
 field)`, carries unknown record kinds verbatim with their bodies untouched, and refuses a version it
 does not support. — **MA-80**
 
-**11.6 What this document's own version means.** `martelage 0.1` is a *draft*: the normative requirements
+**11.6 What this document's own version means.** `martelage 0.2` is a *draft*: the normative requirements
 are complete enough to implement against and to cite, and the change policy of §11.2–11.3 applies to
 the wire format it defines from `v:1` onward. A change to a draft's requirement MAY be breaking; a
 change to a published `v` MUST NOT be. A conformance statement MUST name both the document version
 and the wire version it was made against. — **MA-81**
+
+**11.7 What moved between `martelage 0.1` and `martelage 0.2`, and what did not.** This subsection
+records the change, because a version that moves without a record of what moved is a version claim a
+reader cannot check.
+
+*What moved:* the **verifier surface only**. At `martelage 0.1` this document specified the anchor
+profiles of §9 but shipped a verifier for none of the anchored ones. At `martelage 0.2` it ships
+`validator/p3-verify`, the P3 profile's verifier (§9.3, `p3-eidas-qualified-seal-asic-e`): the ASiC-E
+container, the CAdES seal, the RFC 3161 token and the whole chain each signer reaches. With it comes
+revocation **as an input, never as a fetch** — `--revocation FILE` for a CRL, `--ocsp-response FILE`
+for an OCSP response, and `--revocation-dir DIR` for a directory of both. No wire byte is involved in
+any of that: it is the surface a *checker* offers, not a change to what a package may contain.
+
+*What did not move:* the wire format. It stays `"v":1`. No field was added, removed or re-meant; no
+requirement of §2 through §10 changed its meaning. **A package written for `martelage 0.1` is a
+`martelage 0.2` package**, and a validator built against `martelage 0.1` decides it exactly as it did
+— `validator/martelage-verify` is untouched by this bump and its banner still names the version it
+was written against (`MARTELAGE-0.1`), which is a true statement about that file and not about a
+package; `validator/p3-verify` names the version it implements. The one normative sentence this bump
+adds is MA-83, below, which states the rule the bump itself must not break. What a document version
+buys a reader is therefore a statement about *this text and its shipped verifier*, never about a
+package's bytes: **a package MUST NOT be required to carry the document version** — `v:1` is the only
+version a package states, and a verifier MUST NOT read a document-version string out of a package or
+refuse a package on the basis of one. — **MA-83**
+
+*How this bump was published, plainly:* it was published **one commit late**. The revision that built
+the P3 verifier and took CRLs as an input was released as tag `v0.2.0`, and that tag's message says
+"Document version moves 0.1 -> 0.2 because the verifier surface grew" — while the text inside the tag
+still opened "**Status:** draft 0.1" with the identifier `martelage 0.1`. The tag therefore claimed a
+version change that had not happened. The annotated tag was not rewritten, because a published tag is
+published; the correction is this subsection and the header above, made in the commit after it. A
+record that is corrected forward, and says that it was corrected forward, is worth more than a tag
+whose contents and whose description disagree.
 
 ---
 
@@ -768,7 +805,7 @@ removing this annex would leave the standard whole.
 
 **A.1 What it is.** `baliveau` is an append-only auditing system for a versioned deployment store. It
 publishes its record through a read contract, `baliveau-cnc v1`, as JSON Lines on stdout from a tool
-called `fx-export`. Baliveau is the first conformance case for MARTELAGE-0.1, not its definition.
+called `fx-export`. Baliveau is the first conformance case for MARTELAGE-0.2, not its definition.
 
 **A.2 The payload is byte-compatible with §6 today — MEASURED against the emitter's source.**
 `tools/fx-export.c` writes each record's envelope keys in exactly the order §6.2 requires, with
@@ -807,7 +844,7 @@ statement in the form of Annex C is the missing artifact.
 ## Annex B (informative) — prior art, surveyed from primary sources
 
 Each quote below was read from the named primary source on 2026-10-30 during this standard's
-research and is reproduced here as recorded then; it has not been re-read for draft 0.1, so treat the
+research and is reproduced here as recorded then; it has not been re-read for draft 0.2, so treat the
 wording as MEASURED-as-of-that-date and re-verify before quoting it in a normative argument. Each
 entry states adopt / align / reject and the one decisive reason.
 
@@ -878,7 +915,7 @@ definition.
 ## Annex C (informative) — conformance statement template
 
 > `<Claimant>` states that packages produced by `<producer component, version>` conform to
-> **MARTELAGE-0.1** (`martelage 0.1`, wire version `v:1`).
+> **MARTELAGE-0.2** (`martelage 0.2`, wire version `v:1`).
 >
 > Requirements satisfied: `<list of MA-n>`, or "all of §2.1".
 > Requirements not satisfied, with reason: `<MA-n>: <reason>` or "none".

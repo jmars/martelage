@@ -1,0 +1,64 @@
+vector: 54-ocsp-good
+what:   the OCSP answer that says the sealer is fine. The same container as 53, the same
+        delegated responder, the same window; the responder's database answers "good" for serial
+        0A11 and the intermediate is spoken for by root A's CRL. The verdict is the unarmed
+        run's verdict — 0 — and the report says revocation WAS checked, names the response that
+        said so, names the CERTIFICATE it spoke for, and says what a supplied response cannot
+        establish, so "checked and clean" is never the same string as "not checked"
+run:    validator/p3-verify --container vectors/54-ocsp-good/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --ocsp-response vectors/pki/ocsp-signerA-good.der \
+          --revocation vectors/pki/crl-rootA-clean.pem \
+          vectors/54-ocsp-good/pkg
+exit:   0
+also:   validator/p3-verify --container vectors/54-ocsp-good/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --ocsp-response vectors/pki/ocsp-signerA-good.pem \
+          --revocation vectors/pki/crl-rootA-clean.pem \
+          vectors/54-ocsp-good/pkg   ->  exit 0
+        the SAME response in the OTHER encoding: the PEM form, byte for byte the DER above inside
+        a "-----BEGIN OCSP RESPONSE-----" envelope. `openssl ocsp -respin` reads DER only
+        (MEASURED), so the verifier decodes the envelope itself and the report names the format it
+        was handed. --ocsp-response takes either
+        validator/p3-verify --container vectors/54-ocsp-good/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --ocsp-response vectors/pki/ocsp-signerC-good.der \
+          --revocation vectors/pki/crl-rootA-clean.pem \
+          vectors/54-ocsp-good/pkg   ->  exit 3
+        the CONTRAST: a well-formed response, signed by the same authorised responder, about
+        signerC — a certificate that is NOT in this container's chain. It is reported as covering
+        nothing here, the sealer is left unspoken for, and the run is undecidable. A "good" is
+        never carried across to a certificate the response does not name
+        validator/p3-verify --container vectors/54-ocsp-good/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/54-ocsp-good/pkg   ->  exit 0
+        UNARMED: the same exit code and the report's revocation layer says NOT checked. Arming
+        does not change the verdict here; it changes whether the report may say revocation was
+        checked
+must print:
+  - "checked CLEAN — 2 certificate(s) in the chain checked against"
+  - "the OCSP response signed by CN = martelage test OCSP responder"
+  - "stating good for the signer CN=Witness AG"
+  - "reported 'good' by the OCSP response vectors/pki/ocsp-signerA-good.der"
+  - "thisUpdate 2020-01-01 00:00:00Z, nextUpdate 2099-01-01 00:00:00Z"
+  - "checked and clean, from vectors/pki/ocsp-signerA-good.der"
+  - "p3.8     revocation          checked CLEAN"
+  - "a supplied trust anchor is the trust input"
+  - "covering NOTHING in this chain — it names serial 0A14"   (on the signerC run, NOT on this one)
+  - "NOT checked — no revocation material was supplied"       (on the unarmed run, NOT on this one)
+requirements exercised: MA-64, MA-70, MA-71
+why it fails without the fix: MEASURED. The pre-fix verifier exits 2 on this invocation ("unknown
+        option --ocsp-response"): a supplied OCSP response cannot be expressed at all, and the
+        tool's own text says it is "not implemented here at all". The discipline this vector pins
+        is the one the code has to keep once it IS implemented: with the coverage test removed —
+        the response's statuses applied to every chain certificate instead of the one the
+        response names — the signerC arm reports exit 0 "checked CLEAN" for a certificate the
+        responder never answered about. The must-print pair above is the difference: the 0A14
+        response covers NOTHING and says so, and the run is 3
+what this vector does NOT claim: that the certificates were unrevoked at any other time, or that
+        no responder would say otherwise. An OCSP response speaks for the window it states and for
+        the certificate it names; the report's not-checkable block says both on every armed run

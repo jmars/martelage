@@ -26,6 +26,13 @@
 | `tsa-expired.crt.pem` | the **same key and subject** as `tsa`, window `2020-01-01 .. 2021-01-01`: a token from a TSA that was not valid when it stamped |
 | `tsa.cnf`, `tsa.serial` | the TSA's configuration; `openssl ts -reply` reads the serial from here |
 | `tsa-expired.cnf`, `tsa-expired.serial` | the same configuration pointing at `tsa-expired.crt.pem`: one certificate and one serial file different |
+| `ocsp-responder.crt.pem` / `.key.pem` | the **delegated OCSP responder**, `CN=martelage test OCSP responder`, issued by intermediate A with `extendedKeyUsage = critical,OCSPSigning` — so its answers are authorised by the CA that issued the certificates it answers about, and its chain reaches root A |
+| `ocsp-rogue.crt.pem` / `.key.pem` | a **self-signed** certificate with the same EKU, `CN=martelage rogue OCSP responder`: its answers are signed by a party no supplied anchor vouches for — the unanchored-responder arm |
+| `ocsp-signerA-good.der` / `.pem` | the responder's answer for the sealer (serial `0A11`): `good`, window `2020-01-01 .. 2099-01-01`, in both encodings — `--ocsp-response` takes DER or PEM |
+| `ocsp-signerA-revoked.der` | the same answer with the sealer's serial **revoked** `2021-06-01`, reason `keyCompromise` — the same entry the revoked CRL carries, one medium over |
+| `ocsp-signerA-expired.der` | the same CA, same responder, same `good` — window `2020-01-01 .. 2021-01-01`, so it is expired on any host at any time, exactly as `crl-intermediateA-expired.pem` is |
+| `ocsp-signerA-rogue.der` | the same `good`, signed by `ocsp-rogue`: a valid signature from a party that chains to nothing |
+| `ocsp-signerC-good.der` | a well-formed `good` for serial `0A14` (`signerC`), a certificate **not in the vectors' chain**: a `good` is never carried across to another certificate |
 | `crl-intermediateA-clean.pem` / `.der` | intermediate A's CRL with **no** entries, one in each encoding: the "checked clean" arm, and the arm that says `--revocation` takes PEM or DER |
 | `crl-intermediateA-revoked.pem` | the same CRL with **one** entry: `signerA` (serial `0x0A11`) revoked `2021-06-01`, reason `keyCompromise` — the arm where the supplied material refuses the seal |
 | `crl-intermediateA-expired.pem` | the same CA, same key, **no** entries, window `2020-01-01 .. 2021-01-01`: the CRL whose `nextUpdate` is in the past, on any host at any time |
@@ -49,11 +56,18 @@ regenerate the containers too, or the shipped containers will be sealed by keys 
 holds:
 
 ```sh
-sh tools/mkpki.sh     # rebuild vectors/pki (new keys, same dates and layout)
-sh tools/mkp3.sh      # rebuild vectors/34..47 (packages and containers)
+sh tools/mkpki.sh     # rebuild vectors/pki (new keys, same dates and layout), then the CRLs and responses
+sh tools/mkcrl.sh     # just the CRLs, from the certificates already here
+sh tools/mkocsp.sh    # just the OCSP responses, from those certificates and the two responders
+sh tools/mkp3.sh      # rebuild vectors/34..58 (packages, containers and the material directories)
 ```
 
-Both scripts run offline and need only `openssl` and `python3`. `tools/mkasic.py` is the container
+All of them run offline, open no port, and need only `openssl` and `python3`. The OCSP responses are
+produced by an `openssl ocsp -index` responder reading a **request file** (`-reqin`, never a port),
+and are then **re-dated and re-signed** by the same responder key: `openssl ocsp` stamps a response
+with the build second and refuses a non-positive `-ndays`/`-nmin` (MEASURED on 3.5.3), so the fixed
+2020/2099/2021 windows these files carry can only be had by moving the two GeneralizedTime fields and
+re-signing. `tools/mkocsp.sh`'s header states exactly what it rewrites. `tools/mkasic.py` is the container
 builder; its docstring states the exact container shape it produces. `mkpki.sh` replaces the generated
 material only — this README survives a rebuild, because a rebuild that deleted the tree's own account
 of what the keys are would be a rebuild that lost information.
