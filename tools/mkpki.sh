@@ -210,6 +210,12 @@ sh "$here/mkcrl.sh" "$pki" >/dev/null
 # the OCSP responses, from the certificates above and the two responders. Separate
 # for the same reason: `sh tools/mkocsp.sh vectors/pki`.
 sh "$here/mkocsp.sh" "$pki" >/dev/null
+# the archival timestamps the long-term-validation vectors CARRY, over the CRLs
+# and the response just built. Last, because they are taken over those files'
+# exact bytes: a rebuilt PKI means rebuilt CRLs means rebuilt tokens, and a stale
+# vectors/pki/ltv would make the LTV arms assert something that is not true of the
+# containers mkp3.sh would then seal. `sh tools/mklv.sh vectors/pki`.
+sh "$here/mklv.sh" "$pki" >/dev/null
 
 printf 'mkpki.sh: built %s\n' "$pki"
 for f in rootA intermediateA intermediateA-expired signerA signerC signerB expired operator tsa tsa-expired rootB \

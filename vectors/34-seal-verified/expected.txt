@@ -26,7 +26,7 @@ must print:
   - "genTime"
   - "checked: the signer's public key differs from the operator's"
   - "NOT checked by any run of this verifier — no CRL is read, no OCSP responder is contacted"
-  - "reported present or absent only"
+  - "absent — the container carries no long-term validation material and the claim does not assert ltv=true"
   - "A package proves that what it contains was not altered after it left"
   - "A coherent tamper performed before the first observation is invisible"
 requirements exercised: MA-61 (rule e), MA-64, MA-70, MA-71, MA-74

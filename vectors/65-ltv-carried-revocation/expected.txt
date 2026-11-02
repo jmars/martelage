@@ -1,0 +1,33 @@
+vector: 65-ltv-carried-revocation
+what:   the material the container carries says the SEALER WAS REVOKED. The CRL for
+        intermediate A is the one vector 49's `--revocation` arm is handed — with
+        the single entry that lists signerA (serial 0x0A11) revoked 2021-06-01,
+        reason keyCompromise — carried inside the container with an archival
+        timestamp over it, and the rest of the material is 59's. §9.3.1 MA-84: a
+        value a certificate was revoked by REFUSES the container, and here it is not
+        the verifier's own revocation input that says so but the package's own
+        evidence, which is why the refusal says the seal is refuted by what the
+        container carries
+run:    validator/p3-verify --container vectors/65-ltv-carried-revocation/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/65-ltv-carried-revocation/pkg
+exit:   1
+also:   validator/p3-verify --container vectors/59-ltv-valid/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem vectors/59-ltv-valid/pkg   ->  exit 0
+        the CONTROL: the same construction and the same material except that the
+        CRL carries no entry. One line in the CRL's index decides 1 against 0, which
+        is the same one-line difference vector 49's pair is built on — one medium
+        over, inside the seal rather than handed to the verifier
+must print:
+  - "is REVOKED by the carried CRL"
+  - "revocation date 2021-06-01 12:00:00Z"
+  - "refuted by the package's own evidence"
+requirements exercised: MA-64, MA-70, MA-84
+why it fails without the fix: MEASURED. Pre-fix the run exits 1 as well, and again
+        for a reason that is not this rule: the carried entries are refused as "the
+        package holds no such file", so no carried value is ever read. The evidence
+        is the mutant probe recorded in handoff-martelage-ltv-result: with the
+        carried-revocation rule removed from the post-fix tool, this vector and only
+        this vector flips 1 -> 0 and 59 stays 0.

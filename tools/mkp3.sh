@@ -23,10 +23,10 @@ mk="python3 tools/mkasic.py"
 # the one package every P3 vector seals. It is the base-tier example package
 # from vector 01 with the anchor slot filled in as §9.2 requires, and nothing
 # else touched.
-mkpkg() { # $1: dir, $2: claim timestamp ("qualified"|"none"), $3: container reference
-	python3 - "$1" "$2" "$3" <<'PY'
+mkpkg() { # $1: dir, $2: claim timestamp ("qualified"|"none"), $3: container reference, $4: ltv ("true"|"false")
+	python3 - "$1" "$2" "$3" "${4:-false}" <<'PY'
 import json, os, sys
-out, ts, ref = sys.argv[1], sys.argv[2], sys.argv[3]
+out, ts, ref, ltv = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 src = json.load(open("vectors/01-minimal-conformant/pkg/package.json"))
 src["anchor"] = {
     "anchored": True,
@@ -37,7 +37,7 @@ src["anchor"] = {
         "sealer": "Witness AG",
         "seal": "qualified-electronic-seal",
         "timestamp": ts,
-        "ltv": False,
+        "ltv": ltv == "true",
     },
 }
 os.makedirs(out, exist_ok=True)
@@ -49,16 +49,37 @@ open(os.path.join(out, "package.json"), "w").write(
 PY
 }
 
+# the vectors this script owns, in the order they are built. One list, because
+# the removal pass, the guard below and any future pass must agree on it.
+vectors="34-seal-verified 35-seal-digest-moved 36-anchor-untrusted 37-self-seal
+         38-no-timestamp 39-container-malformed 40-signer-expired 41-signature-broken
+         42-multisigner-operator 43-ca-signer 44-chain-expired 45-tsa-expired
+         46-zip-duplicate 47-manifest-path-escape
+         48-embedded-content 49-revocation-revoked 50-revocation-clean
+         51-revocation-wrong-issuer 52-revocation-expired
+         53-ocsp-revoked 54-ocsp-good 55-ocsp-expired 56-ocsp-unanchored-responder
+         57-revocation-dir-partial 58-revocation-dir-garbage
+         59-ltv-valid 60-ltv-absent 61-ltv-evidence-expired 62-ltv-missing-cert
+         63-ltv-unclaimed-material 64-ltv-timestamp-unverified
+         65-ltv-carried-revocation"
+
+# expected.txt is HAND-WRITTEN: it is what the vector asserts, and a rebuild
+# that lost one would leave a tree that still looks green while asserting
+# nothing. That failure was once observed on a bad run of this script, so the
+# state of every one is recorded before the first rm and compared after the last
+# write; a rebuild that loses or alters an assertion aborts.
+guard=$(mktemp "${TMPDIR:-/tmp}/mkp3.guard.XXXXXX")
+trap 'rm -f "$guard"' EXIT HUP INT TERM
+for v in $vectors; do
+	[ -f "vectors/$v/expected.txt" ] || {
+		printf 'mkp3.sh: vectors/%s/expected.txt is missing BEFORE the rebuild — refusing to run\n' "$v" >&2
+		exit 1
+	}
+	sha256sum "vectors/$v/expected.txt" >>"$guard"
+done
+
 # remove the GENERATED parts only: the package directories and the containers.
-# expected.txt is hand-written and is never touched by a rebuild.
-for v in 34-seal-verified 35-seal-digest-moved 36-anchor-untrusted 37-self-seal \
-         38-no-timestamp 39-container-malformed 40-signer-expired 41-signature-broken \
-         42-multisigner-operator 43-ca-signer 44-chain-expired 45-tsa-expired \
-         46-zip-duplicate 47-manifest-path-escape \
-         48-embedded-content 49-revocation-revoked 50-revocation-clean \
-         51-revocation-wrong-issuer 52-revocation-expired \
-         53-ocsp-revoked 54-ocsp-good 55-ocsp-expired 56-ocsp-unanchored-responder \
-         57-revocation-dir-partial 58-revocation-dir-garbage; do
+for v in $vectors; do
 	rm -rf "vectors/$v/pkg" "vectors/$v/pkg-moved"
 	rm -f "vectors/$v"/*.asice
 done
@@ -276,4 +297,138 @@ file it was handed must say so rather than skip it.
 EOF
 chmod 644 vectors/58-revocation-dir-garbage/material/notes-from-the-operator.txt
 
-printf 'mkp3.sh: rebuilt the P3 vectors under %s/vectors\n' "$repo"
+# ── 59..64: LONG-TERM VALIDATION, from material the CONTAINER carries ────
+# §9.3.1 (MA-84): when the claim states "ltv":true the container MUST carry, for
+# every certificate of the established chain, revocation evidence (a CRL or an
+# OCSP response) AND an RFC 3161 timestamp whose signature covers that evidence.
+# --manifest-entry puts each file in the ZIP under META-INF/ltv/ AND lists it in
+# the ASiC manifest, so the CAdES seal is what binds these bytes — that is why
+# they are carried INSIDE the container instead of handed to the verifier on the
+# command line. The material itself is built by tools/mklv.sh (called by
+# tools/mkpki.sh); nothing here is fetched from anywhere.
+ltv=vectors/pki/ltv
+seal_ltv() { # $1: vector; the rest: "NAME=FILE" manifest entries carried by that arm
+	v=$1
+	shift
+	mkpkg "vectors/$v/pkg" qualified seal.asice true
+	args=
+	for pair in "$@"; do
+		args="$args --manifest-entry $pair"
+	done
+	# the pairs are complete arguments, never split: they hold no spaces
+	# shellcheck disable=SC2086
+	$mk --package "vectors/$v/pkg" \
+		--signer $pki/signerA.crt.pem --key $pki/signerA.key.pem --chain $pki/intermediateA.crt.pem \
+		--timestamp $args --out "vectors/$v/seal.asice"
+}
+
+# 59 — COMPLETE, VALID and CORRECTLY TIMED material: one CRL for the sealer's
+# issuer (intermediate A) and one for the intermediate's issuer (root A), each
+# with an archival timestamp over its own bytes. Both CRLs are inside their
+# windows at the time each timestamp establishes, so this is the arm that may
+# pass, and its report names every value it validated
+seal_ltv 59-ltv-valid \
+	META-INF/ltv/crl-intermediateA-clean.pem=$ltv/crl-intermediateA-clean.pem \
+	META-INF/ltv/crl-intermediateA-clean.pem.tst=$ltv/crl-intermediateA-clean.pem.tst \
+	META-INF/ltv/crl-rootA-clean.pem=$ltv/crl-rootA-clean.pem \
+	META-INF/ltv/crl-rootA-clean.pem.tst=$ltv/crl-rootA-clean.pem.tst
+
+# 60 — the claim states ltv=true and the container carries NO validation material
+# at all: the same construction as 34 with one claim field different. The claim is
+# contradicted by the evidence it was supposed to carry
+mkpkg vectors/60-ltv-absent/pkg qualified seal.asice true
+$mk --package vectors/60-ltv-absent/pkg \
+	--signer $pki/signerA.crt.pem --key $pki/signerA.key.pem --chain $pki/intermediateA.crt.pem \
+	--timestamp --out vectors/60-ltv-absent/seal.asice
+
+# 61 — material that is complete by count and OUT OF ITS WINDOW at the archival
+# time: the sealer's CRL has nextUpdate 2021-01-01 and the timestamp over it is
+# stamped later, so at the moment that timestamp establishes the CRL had already
+# expired. One file differs from 59 and nothing else
+seal_ltv 61-ltv-evidence-expired \
+	META-INF/ltv/crl-intermediateA-expired.pem=$ltv/crl-intermediateA-expired.pem \
+	META-INF/ltv/crl-intermediateA-expired.pem.tst=$ltv/crl-intermediateA-expired.pem.tst \
+	META-INF/ltv/crl-rootA-clean.pem=$ltv/crl-rootA-clean.pem \
+	META-INF/ltv/crl-rootA-clean.pem.tst=$ltv/crl-rootA-clean.pem.tst
+
+# 62 — an OCSP response for the SEALER and its archival timestamp, and nothing at
+# all for the intermediate: the material covers part of the chain and the arm
+# names the certificate it does not cover. It is also the arm that exercises the
+# carried OCSP path rather than the carried CRL path
+seal_ltv 62-ltv-missing-cert \
+	META-INF/ltv/ocsp-signerA-good.der=$ltv/ocsp-signerA-good.der \
+	META-INF/ltv/ocsp-signerA-good.der.tst=$ltv/ocsp-signerA-good.der.tst
+
+# 63 — the SAME complete material as 59 under a claim that states ltv=false: a
+# finding, never a refusal, because the package makes no LTV claim for the
+# material to support. The control for "carried material alone never refuses".
+# The claim is filled in as true first and then set to false, so the package is
+# byte-identical to 59's except in that one field
+mkpkg vectors/63-ltv-unclaimed-material/pkg qualified seal.asice true
+python3 - vectors/63-ltv-unclaimed-material/pkg/package.json <<'PY'
+import json, sys
+path = sys.argv[1]
+mf = json.load(open(path))
+mf["anchor"]["claim"]["ltv"] = False
+open(path, "w").write(json.dumps(mf, separators=(",", ":"), ensure_ascii=False) + "\n")
+PY
+# the container above was sealed over the ltv=true package, so it is rebuilt over
+# the claim that says false: one claim field differs from 59, and nothing else
+$mk --package vectors/63-ltv-unclaimed-material/pkg \
+	--signer $pki/signerA.crt.pem --key $pki/signerA.key.pem --chain $pki/intermediateA.crt.pem \
+	--timestamp \
+	--manifest-entry META-INF/ltv/crl-intermediateA-clean.pem=$ltv/crl-intermediateA-clean.pem \
+	--manifest-entry META-INF/ltv/crl-intermediateA-clean.pem.tst=$ltv/crl-intermediateA-clean.pem.tst \
+	--manifest-entry META-INF/ltv/crl-rootA-clean.pem=$ltv/crl-rootA-clean.pem \
+	--manifest-entry META-INF/ltv/crl-rootA-clean.pem.tst=$ltv/crl-rootA-clean.pem.tst \
+	--out vectors/63-ltv-unclaimed-material/seal.asice
+
+# 64 — complete material in which the ARCHIVAL TIMESTAMP over the intermediate's
+# CRL does not verify: one byte of its signature is flipped as the entry is
+# written, so the token still parses and still states which bytes it is about, and
+# only its own signature is broken
+mkpkg vectors/64-ltv-timestamp-unverified/pkg qualified seal.asice true
+$mk --package vectors/64-ltv-timestamp-unverified/pkg \
+	--signer $pki/signerA.crt.pem --key $pki/signerA.key.pem --chain $pki/intermediateA.crt.pem \
+	--timestamp \
+	--manifest-entry META-INF/ltv/crl-intermediateA-clean.pem=$ltv/crl-intermediateA-clean.pem \
+	--manifest-entry META-INF/ltv/crl-intermediateA-clean.pem.tst=$ltv/crl-intermediateA-clean.pem.tst \
+	--manifest-entry META-INF/ltv/crl-rootA-clean.pem=$ltv/crl-rootA-clean.pem \
+	--manifest-entry META-INF/ltv/crl-rootA-clean.pem.tst=$ltv/crl-rootA-clean.pem.tst \
+	--corrupt-entry META-INF/ltv/crl-rootA-clean.pem.tst \
+	--out vectors/64-ltv-timestamp-unverified/seal.asice
+
+# 65 — the material the container carries says the SEALER WAS REVOKED: the CRL for
+# intermediate A carries the one entry 49's arm carries, with an archival timestamp
+# over it, and the rest of the material is 59's. A positive statement of revocation
+# from the package's own evidence refuses the container — §9.3.1 MA-84: a value a
+# certificate was revoked by is not weighed against anything, and it is not the
+# verifier's own revocation input that says so but the seal's
+seal_ltv 65-ltv-carried-revocation \
+	META-INF/ltv/crl-intermediateA-revoked.pem=$ltv/crl-intermediateA-revoked.pem \
+	META-INF/ltv/crl-intermediateA-revoked.pem.tst=$ltv/crl-intermediateA-revoked.pem.tst \
+	META-INF/ltv/crl-rootA-clean.pem=$ltv/crl-rootA-clean.pem \
+	META-INF/ltv/crl-rootA-clean.pem.tst=$ltv/crl-rootA-clean.pem.tst
+
+# every assertion survived the rebuild, byte for byte
+
+after=$(mktemp "${TMPDIR:-/tmp}/mkp3.after.XXXXXX")
+for v in $vectors; do
+	[ -f "vectors/$v/expected.txt" ] || {
+		printf 'mkp3.sh: vectors/%s/expected.txt is MISSING after the rebuild — the rebuild destroyed an\n' "$v" >&2
+		printf '         assertion and the tree would look green while asserting nothing. Aborting.\n' >&2
+		rm -f "$after"
+		exit 1
+	}
+	sha256sum "vectors/$v/expected.txt" >>"$after"
+done
+if ! cmp -s "$guard" "$after"; then
+	printf 'mkp3.sh: an expected.txt CHANGED during the rebuild — a rebuild never rewrites an assertion:\n' >&2
+	diff "$guard" "$after" >&2 || true
+	rm -f "$after"
+	exit 1
+fi
+rm -f "$after"
+
+printf 'mkp3.sh: rebuilt the P3 vectors under %s/vectors (%d expected.txt byte-identical)\n' \
+	"$repo" "$(wc -l <"$guard")"

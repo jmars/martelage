@@ -1,1 +1,1 @@
-log@example-archive states: 6c9b1e65fefa98d53b03b7485a11458561ce0eee487cc07cb9d260b9bdd1fd41 (this package's digest)
+log@example-archive states: b1d23d1e560de173202fa7fdf1bacc98f5ecbfabec41b8a28eb3c681b49c5cab (this package's digest)

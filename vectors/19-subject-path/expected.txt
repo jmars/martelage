@@ -3,7 +3,7 @@ what:   subject.id is a filesystem path. §5.2.3 requires a CONTENT identity and
         forbids a path: a path is not part of a record, and an identity naming a
         machine or a file invites reading the package as a record about a person.
         A validator cannot tell a digest from a name, so it refuses the shapes it
-        can see — a path segment or a bare . — and edition 0.1 says so in §5.2.3
+        can see — a path segment or a bare . — and edition 0.2 says so in §5.2.3
 run:    sh validator/martelage-verify vectors/19-subject-path/pkg
 exit:   1
 must print:

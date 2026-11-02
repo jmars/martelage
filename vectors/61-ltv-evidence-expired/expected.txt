@@ -1,0 +1,43 @@
+vector: 61-ltv-evidence-expired
+what:   the claim states "ltv":true and the container carries validation material
+        that is COMPLETE by count: a CRL for the sealer's issuer with an archival
+        timestamp over it, and a CRL for the intermediate's issuer (root A) with its
+        own timestamp. The sealer's CRL carries nextUpdate 2021-01-01 and its
+        timestamp is stamped later, so at the moment the timestamp establishes, that
+        CRL had already expired — §9.3.1 MA-84 requires each value to be inside its
+        window AT THE ARCHIVAL TIME, and the refusal names the value, the time and
+        the window. One carried file differs from 59 and nothing else
+run:    validator/p3-verify --container vectors/61-ltv-evidence-expired/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/61-ltv-evidence-expired/pkg
+exit:   1
+also:   validator/p3-verify --container vectors/59-ltv-valid/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem vectors/59-ltv-valid/pkg   ->  exit 0
+        the CONTROL: the same construction with a CRL whose window is 2020-01-01 ..
+        2099-01-01 for the same CA and the same signer. The window, and nothing
+        else, decides 1 against 0
+        validator/p3-verify --container vectors/61-ltv-evidence-expired/seal.asice \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/61-ltv-evidence-expired/pkg   ->  exit 3
+        the same container with --trust-anchors withheld: the archival timestamp can
+        then be verified against nothing, so no time is established and NO window is
+        checked — the run says the LTV question CANNOT DECIDE instead of refusing on
+        a window it never measured. The refusal above exists only because this
+        verifier established the time first and compared the window to it
+must print:
+  - "EXPIRED at the archival time"
+  - "window 2020-01-01 00:00:00Z .. 2021-01-01 00:00:00Z"
+  - "was EXPIRED at the time the archival timestamp"
+  - "p3.7     long-term validation REFUSED — the carried LTV material does not support the claim"
+requirements exercised: MA-64, MA-70, MA-84
+why it fails without the fix: MEASURED. Against the pre-fix tool this vector exits
+        1 as well, but for a reason that has nothing to do with the window: the
+        pre-fix run refuses every carried entry as "the package holds no such file",
+        so it never read the CRL at all — the pre/post comparison is empty here and
+        is NOT the evidence. The evidence that the window rule is what decides this
+        arm is the mutant probe in handoff-martelage-ltv-result: with the window
+        comparison removed from the post-fix tool, this vector and only this vector
+        flips 1 -> 0, while 59 stays 0. The control above (59) is the other half:
+        the same construction with the window defect absent passes.

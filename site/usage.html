@@ -45,7 +45,7 @@ edited to match the page:</p>
 <pre><code>martelage-verify — MARTELAGE-0.1 reference validator
 
 package      vectors/01-minimal-conformant/pkg
-digest       667229f663fa3d0c79d738ba0d016c99e10ff05dd794d86a01edd3f8df0a5c1a   (sha256 of package.json: this is the package digest)
+digest       ab2bc3a563e26e1454400ba70cebad73a849d194bcd2c1d2787c0efaf3c2653c   (sha256 of package.json: this is the package digest)
 standard     martelage v1 (kind package-manifest)
 subject      c419edf957fda5f89c2988273d3d00e9e5b2a69ebe7f6bca22644da52bc129f3 (kind note-log)
 producer     example / by-hand 0 / contract martelage-example-notes 1
@@ -62,7 +62,7 @@ scope
 
 files
   OK   records.jsonl                abf920fbb49003e1b06badc085e74f8396713bca64d2f123eccdb256e6a36bad  776 bytes  role=records
-  OK   notes.md                     798dab2402394de24954a4e5d0b8c806d8185ac2e54a95ec3ef22e1aeeba807f  55 bytes  role=document
+  OK   notes.md                     6ed0b5af646aad99f7ae97d94c2a56623b36de11d5967af4fc508bececdbca10  55 bytes  role=document
 
 streams
   FILE                 STREAM           N     HEAD           VERDICT
@@ -74,7 +74,7 @@ anchor
 layers
   layer 0  body digests        checked
   layer 1  stream continuity   checked
-  layer 2  package digest     667229f663fa3d0c79d738ba0d016c99e10ff05dd794d86a01edd3f8df0a5c1a
+  layer 2  package digest     ab2bc3a563e26e1454400ba70cebad73a849d194bcd2c1d2787c0efaf3c2653c
   layer 3  package chain       not armed (no --prev-package given) — omission across packages is NOT checked
   layer 4  anchor              not claimed by this package
 
@@ -180,7 +180,7 @@ not run it inside the repository unless you mean to add that file. The three lin
 written <code>SHA256SUMS</code> followed by <code>sha256sum -c</code>, exit code <code>0</code>:</p>
 
 <pre><code>abf920fbb49003e1b06badc085e74f8396713bca64d2f123eccdb256e6a36bad  records.jsonl
-798dab2402394de24954a4e5d0b8c806d8185ac2e54a95ec3ef22e1aeeba807f  notes.md
+6ed0b5af646aad99f7ae97d94c2a56623b36de11d5967af4fc508bececdbca10  notes.md
 records.jsonl: OK
 notes.md: OK</code></pre>
 
@@ -506,8 +506,13 @@ revocation status; armed, it says exactly which material was used, with each CRL
 <code>thisUpdate</code>, <code>nextUpdate</code> and entry count and each response's signer, status and
 window, that a certificate no supplied material speaks for has no revocation status here, that a
 revocation published after a CRL's or a response's <code>nextUpdate</code> is invisible, and that a
-supplied status is the status <em>now</em> and not at the claimed time; <strong>long-term validation</strong> — LTV material is reported present or absent
-and never validated; the <strong>truth and completeness</strong> of the records, which is limit (iii)
+supplied status is the status <em>now</em> and not at the claimed time; <strong>long-term validation
+beyond what the container carries</strong> — the material the container carries <em>is</em> validated
+(§9.3.1 MA-84, below), and what stays outside is a validation value the container does not carry
+(nothing is fetched), the preservation of the package by an archive authority over future years,
+whether the archival timestamps' own authorities are themselves revoked, and the revocation of a
+supplied trust anchor, which is not an omission to repair: to be revocable an anchor needs a root of
+trust above itself, and that regress is what the anchor exists to stop; the <strong>truth and completeness</strong> of the records, which is limit (iii)
 below and is kept distinct from the residual of §3.3; the <strong>signer's legal identity</strong>
 beyond the subject its certificate claims; whether the certificate was <strong>issued for
 sealing</strong> at all (this standard defines no key-usage profile for a seal, so the chain is
@@ -527,9 +532,29 @@ embedded-content CMS, the concatenated-digest form and XAdES are all shapes this
 implement, and a run that meets one says which shape it met instead of reporting it as a detached
 signature it is not. It does not verify XAdES. It is not a revocation service either:
 <code>--revocation</code>, <code>--ocsp-response</code> and <code>--revocation-dir</code> check the
-material they are handed and nothing else — no live OCSP, no CRL download, no OCSP request, no
-long-term validation. It does not make the base validator verify seals, and it does not
+material they are handed and nothing else — no live OCSP, no CRL download and no OCSP request
+anywhere. Long-term validation is validated <strong>for the material the container carries</strong>,
+under the definition of §9.3.1 (MA-84) and its stated limits; a value the verifier was not given is not
+fetched, and every run says so. It does not make the base validator verify seals, and it does not
 change the base tier's tool list (§10.1 MA-68).</p>
+
+<p><strong>Long-term validation, validated (§9.3.1 MA-84).</strong> When the claim states
+<code>"ltv":true</code>, the container must <em>carry</em>, under <code>META-INF/ltv/</code> and covered
+by the ASiC manifest so the seal binds it, revocation evidence — a CRL or an OCSP response — for
+<strong>every</strong> certificate of the chain the run established, and for each value an RFC 3161
+<strong>archival timestamp whose signature covers that value's exact bytes</strong>. The run checks, for
+each carried value, that its own <strong>signature verifies</strong> under the certificate that issued
+it; <strong>which certificate of the chain it speaks for</strong>; that it was <strong>inside its window
+at the time its own archival timestamp establishes</strong> — that time, never this host's clock; and
+that the <strong>archival timestamp's signature verifies</strong>, that its imprint covers the value's
+bytes, that its chain reaches a supplied <strong>anchor</strong>, and that its own authority was valid
+at the time it states. Four outcomes, and only one may pass: complete, valid and correctly timed
+material → the run may report conformance and <strong>names every value it validated</strong>; absent or
+incomplete material → refused, naming what is missing; material present but expired at the archival
+time, unverifiable, revoked, or speaking for nothing → refused, naming the value; and a time that
+<strong>cannot be established</strong> → CANNOT DECIDE, with the window check said out loud rather than
+skipped. <code>"ltv":false</code> reports that no LTV was claimed, and material carried under
+<code>"ltv":false</code> is a <strong>finding</strong> that leaves the exit code alone.</p>
 
 <p>The fixtures are a <strong>throwaway</strong> test PKI under <code>vectors/pki/</code> — two roots,
 an intermediate, a second intermediate with the same key and subject that expired in 2021, a sealer, a
@@ -547,11 +572,17 @@ intermediate A issued and, for the unanchored arm, with one that is self-signed.
 then re-dated and re-signed by the same responder key so their windows are the same fixed dates the
 CRLs use: <code>openssl ocsp</code> stamps a response with the build second and refuses a
 non-positive window, so a shipped "expired response" is impossible without that step. So
-<code>sh tools/mkpki.sh &amp;&amp; sh tools/mkcrl.sh &amp;&amp; sh tools/mkocsp.sh &amp;&amp; sh
-tools/mkp3.sh</code> rebuilds the PKI, the revocation material and the containers together. All of
-them run offline, open no port and need only <code>openssl</code> and <code>python3</code>.
+The archival timestamps the long-term-validation vectors carry are built by
+<code>tools/mklv.sh</code>, one RFC 3161 token over each CRL and over the OCSP response those vectors
+carry, with <code>openssl ts -query</code>/<code>-reply</code> and no responder anywhere; they are not
+re-dated, because a token's genTime lives inside a CMS SignedAttributes structure a script cannot move,
+so what each arm asserts is relative to the build second and the fixture dates fix the direction of the
+inequality. <code>sh tools/mkpki.sh &amp;&amp; sh tools/mkcrl.sh &amp;&amp; sh tools/mkocsp.sh &amp;&amp;
+sh tools/mklv.sh &amp;&amp; sh tools/mkp3.sh</code> rebuilds the PKI, the revocation material, the
+archival timestamps and the containers together. All of them run offline, open no port and need only
+<code>openssl</code> and <code>python3</code>.
 
-Twenty-five vectors (34–58) cover this profile, each with an arm that passes and an arm that fails,
+Thirty-two vectors (34–65) cover this profile, each with an arm that passes and an arm that fails,
 differing by one thing: a digest that moved, an anchor that is withheld, an operator that sealed, an
 operator that <em>co-signed</em>, a CA used as the sealing party, an intermediate or a TSA that
 expired, a ZIP entry name that appears twice, a covered path that leaves the package, a signature whose
@@ -559,7 +590,11 @@ content is embedded instead of detached, a sealer on a CRL, a CRL that lists nob
 another CA, a CRL that has expired, a sealer on an OCSP response, a response that says good, a response
 whose window ended in 2021, a response signed by a responder that chains to nothing, a directory of
 both kinds in which one certificate stays uncovered, and a directory holding one file that is not
-revocation material at all.</p>
+revocation material at all. Seven more (59–65) cover long-term validation: complete and correctly timed
+material, an empty container under <code>ltv:true</code>, a carried CRL that was out of its window at
+the archival time, carried material that leaves one certificate of the chain uncovered, the same
+material under <code>ltv:false</code> (a finding, exit unchanged), a carried archival timestamp whose
+own signature does not verify, and a carried CRL that lists the sealer as revoked.</p>
 
 <p>§9.3 requires three limits to be stated wherever P3 is offered. They are the profile's terms, not
 its small print:</p>

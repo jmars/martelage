@@ -1,0 +1,40 @@
+vector: 63-ltv-unclaimed-material
+what:   the SAME complete, valid material as 59 — four entries under META-INF/ltv/
+        with a verified archival timestamp over each value — carried by a claim that
+        states ltv=false. §9.3.1 MA-84 makes this a FINDING and not a refusal: the
+        package asserts nothing about long-term preservation, so there is no claim
+        for the material to support and none for it to contradict. The report names
+        every carried entry as NOT validated, and the exit code is the one the rest
+        of the run earns — which for this package is 0. A verifier that refused here
+        would be refusing a package for carrying more evidence than it claims
+run:    validator/p3-verify --container vectors/63-ltv-unclaimed-material/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/63-ltv-unclaimed-material/pkg
+exit:   0
+also:   validator/p3-verify --container vectors/59-ltv-valid/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem vectors/59-ltv-valid/pkg   ->  exit 0
+        the CONTROL in the other direction: the same four entries under a claim that
+        states ltv=true are VALIDATED, and that run says so value by value. The
+        claim, and nothing else, decides which of the two reports is printed
+        validator/p3-verify --container vectors/34-seal-verified/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem vectors/34-seal-verified/pkg   ->  exit 0
+        the CONTROL for the absence of material altogether: no claim and no
+        material — nothing to report either way
+must print:
+  - "reported as a FINDING and NOT validated"
+  - "changes no exit code"
+  - "carried, NOT validated — the claim states ltv=false"
+  - "p3.7     long-term validation not claimed — ltv=false with 4 carried material entries"
+requirements exercised: MA-72, MA-84
+why it fails without the fix: MEASURED, and the asymmetry here is 1 against 0 in
+        the SAME direction as 59: the pre-fix tool refuses the four carried entries
+        as "the package holds no such file" (exit 1), while the post-fix tool reports
+        the finding and leaves the verdict at 0. What the fix adds is that the
+        material is named, counted and explicitly left unvalidated rather than
+        refused for a reason that is not true of it. The finding arm itself is
+        proven by the mutant probe in handoff-martelage-ltv-result: with the
+        ltv=false-with-material branch turned into a refusal, this vector and only
+        this vector flips 0 -> 1.

@@ -39,6 +39,20 @@ What it verifies (§9.3 P3):
   * NO signer is the operator — every signer of every entry is compared against
     --operator-cert, and one of them being the operator refuses the container
     (§9.3 limit i);
+  * long-term validation, WHEN the claim states ltv=true — from the material the
+    container CARRIES, and nothing else (§9.3.1 MA-84). For every certificate in
+    the chain this run established, the container must carry revocation evidence
+    (a CRL or an OCSP response) and an RFC 3161 timestamp whose signature covers
+    that evidence; each carried value's own signature is verified under the
+    certificate that issued it, the certificate it speaks for is identified, it
+    is checked inside its window AT THE TIME ITS OWN ARCHIVAL TIMESTAMP
+    ESTABLISHES (never this host's clock), and that timestamp's signature is
+    verified against the supplied anchors with its own authority date-checked at
+    the time it states. A value that is missing, expired at that time, unverifiable
+    or covering nothing refuses the container by name; a time that cannot be
+    established is CANNOT DECIDE and is never silently skipped. ltv=false with
+    material present is a FINDING and no refusal. Nothing is fetched: a value the
+    container does not carry is not validated and is never requested;
   * revocation, ONLY from the material the verifier was handed — a CRL with
     --revocation FILE, an OCSP response with --ocsp-response FILE, or a
     directory of both with --revocation-dir DIR. Every supplied CRL's
@@ -60,8 +74,11 @@ What it verifies (§9.3 P3):
 
 What it does NOT verify, on any run, and says so in its own output (§10.7):
 revocation unless revocation material is given — and then only against that
-material, so no live OCSP responder, no CRL download and no long-term
-validation (LTV material is reported present or absent, never validated); the
+material, so no live OCSP responder and no CRL download, ever; long-term
+validation beyond the material the container carries (a value it does not carry
+is not fetched, and a trust anchor is not revocable: to be revocable it would
+need a root of trust above itself, which is the regress the anchor exists to
+stop); the
 truth or completeness of the records (§9.3 limit iii); the signer's legal
 identity beyond what the certificate claims; and the signer's key usage beyond
 the CA bit (this standard defines no key-usage profile for a seal).
@@ -86,6 +103,12 @@ PROFILE = "p3-eidas-qualified-seal-asic-e"
 MIMETYPE = "application/vnd.etsi.asic-e+zip"
 ASIC_MANIFEST = "META-INF/manifest.xml"
 ASIC_TIMESTAMP = "META-INF/timestamp.tst"
+# the directory a container carries its long-term validation material under
+# (§9.3.1 MA-84): CRLs, OCSP responses and the RFC 3161 timestamps that cover
+# them. These entries are EVIDENCE THE CONTAINER CARRIES, not package files: the
+# ASiC manifest must cover them, so the seal binds their bytes, and there is no
+# package file to compare them against.
+LTV_DIR = "META-INF/ltv/"
 
 # §3.3, printed verbatim by every run that names a package — the same two
 # sentences, word for word, as validator/martelage-verify prints them.
@@ -106,9 +129,17 @@ NOT_CHECKABLE = [
                    "by any run of it: there is no network path in this tool at all. A chain established here is "
                    "established by signature and by certificate date only. 'Valid at the claimed time' below means "
                    "the dates, never revocation status."),
-    ("long-term validation", "LTV material is reported present or absent and is never validated. A container "
-                             "carrying archival timestamps or validation material is reported as carrying it, "
-                             "which is not a statement that it validates (§9.3)."),
+    ("long-term validation beyond what the container carries", "the material the container carries IS "
+                           "validated (§9.3.1 MA-84: revocation evidence and an archival timestamp over it, for "
+                           "every certificate in the established chain, each value checked inside its window at "
+                           "the time its own timestamp establishes). What stays outside this verifier is a "
+                           "validation value the container does not carry — a CRL held by someone else, a status "
+                           "fetched at check time — because nothing is fetched here and nothing outside the "
+                           "container is read; the preservation of this container by an archive authority over "
+                           "future years; whether the archival timestamps' own authorities are themselves "
+                           "revoked; and the revocation of a supplied trust anchor, which is not an omission to "
+                           "fix: to be revocable a trust anchor needs a root of trust above itself, and that "
+                           "regress is what the anchor exists to stop."),
     ("truth and completeness", "whether the sealed records are TRUE, and whether the package is COMPLETE — all "
                                "that ever existed. A qualified seal is a presumption about integrity and origin, "
                                "not a technical guarantee of truth (§9.3 limit iii), and it is kept distinct from "
@@ -134,9 +165,10 @@ REV_ARMED_UNCHECKABLE = ("checked against the revocation material THIS RUN WAS G
                          "response is requested and no responder is contacted — so a certificate no supplied "
                          "material speaks for has no revocation status in this report, a revocation published "
                          "after a CRL's nextUpdate or a response's nextUpdate is not visible here, the status is "
-                         "the status NOW and not at the claimed time, and long-term validation (archival "
-                         "timestamps, proof of existence at a past time) is still never validated. 'Valid at the "
-                         "claimed time' below still means the certificate dates.")
+                         "the status NOW and not at the claimed time, and long-term validation is validated only "
+                         "for the material the CONTAINER carries — never for a file supplied to this run, which is "
+                         "read against this host's clock and at no other time. 'Valid at the claimed time' below "
+                         "still means the certificate dates.")
 
 
 class Refuse(Exception):
@@ -229,7 +261,12 @@ class Verifier:
         self.mime_state = "not read"
         self.mfdigest = "<absent>"
         self.mfpath = None
-        self.ltv_state = "absent — reported, never validated"
+        self.ltv_state = ("absent — the container carries no long-term validation material and the claim "
+                            "does not assert ltv=true, so no LTV was claimed")
+        self.ltv_layer = "not claimed — no material carried and ltv is not true"
+        self.ltv_rows = []
+        self.ltv_established = []
+        self.ltv_material = []
         self.operator_state = "NOT checked — --operator-cert was not supplied"
         self.rev_state = "NOT checked — no revocation material was supplied"
         self.rev_rows = []
@@ -572,6 +609,17 @@ class Verifier:
             return rows
         for rel in sorted(self.covered):
             stated, _alg = self.covered[rel]
+            if rel.startswith(LTV_DIR) and rel not in getattr(self, "package_files", []):
+                # carried evidence, not a package file: the manifest digest and
+                # the signature over the manifest are what bind these bytes, and
+                # there is nothing on disk they are supposed to equal. Reporting
+                # them as "the package holds no such file" would be a refusal
+                # about a file nothing ever claimed was in the package. A path the
+                # PACKAGE declares under the same directory is a package file, and
+                # it is compared to disk here like any other.
+                rows.append((rel, "<carried by the container>", stated or "<none>",
+                             "carried evidence — the seal covers these bytes"))
+                continue
             disk = None
             if self.path_escape(rel):
                 # refused in check_paths; this verifier does not read bytes
@@ -1082,7 +1130,10 @@ class Verifier:
                     self.cannot_decide("  dates: the token could not be re-checked at the time it establishes — "
                                        "%s (§10.3 MA-70)" % reason)
 
-    def date_check_cert(self, label, cert):
+    def date_check_cert(self, label, cert, when=None, source=None):
+        """one certificate at one time. `when` defaults to the container's claimed
+        time; an archival timestamp's own authority is held to the time THAT
+        timestamp establishes, which is a different time in the same run."""
         if not cert:
             return
         nb = parse_date(cert.get("notBefore"))
@@ -1091,15 +1142,18 @@ class Verifier:
             self.cannot_decide("  dates: %s carries dates this verifier could not read (%r .. %r) (§10.3 MA-70)"
                                % (label, cert.get("notBefore"), cert.get("notAfter")))
             return
-        when = self.claimed_time
+        claimed = when is None
+        when = self.claimed_time if claimed else when
+        if source is None:
+            source = ("from the verified timestamp" if claimed and self.ts_state.startswith("present and VERIFIED")
+                      else "self-asserted by the signature")
         if nb <= when <= na:
             return
         which = "expired" if when > na else "not yet valid"
-        self.refuse("dates: %s was %s at the claimed time — the certificate's window is %s .. %s and the claimed "
-                    "time is %s (%s) (§9.3 MA-64, §10.3 MA-70)"
-                    % (label, which, nb.strftime(ISO), na.strftime(ISO), when.strftime(ISO),
-                       "from the verified timestamp" if self.ts_state.startswith("present and VERIFIED")
-                       else "self-asserted by the signature"))
+        self.refuse("dates: %s was %s at %s — the certificate's window is %s .. %s and that time is %s (%s) "
+                    "(§9.3 MA-64, §10.3 MA-70)"
+                    % (label, which, "the claimed time" if claimed else "the time it states",
+                       nb.strftime(ISO), na.strftime(ISO), when.strftime(ISO), source))
 
     # ── the operator ──────────────────────────────────────────────────────
     def check_operator(self, signers):
@@ -1168,6 +1222,8 @@ class Verifier:
         exists to be checked, and treating its absence as 'unchecked' would
         make every armed run undecidable for a reason that is a property of
         trust anchors rather than of this package."""
+        if getattr(self, "_chain_cache", None) is not None:
+            return self._chain_cache
         out = []
         seen = set()
 
@@ -1192,6 +1248,7 @@ class Verifier:
             cert = read_cert_text(self.openssl, path)
             if cert:
                 add("the supplied anchor %s" % cert.get("subject"), path, cert, True)
+        self._chain_cache = out
         return out
 
     def read_crl(self, path, idx):
@@ -1665,8 +1722,28 @@ class Verifier:
             if item["anchor"]:
                 anchors += 1
                 self.rev_rows.append((item["label"],
-                                      "not checked — a supplied trust anchor is the trust input, not a "
-                                      "certificate this run asks anyone to revoke"))
+                                      "not checked, and NOT an omission — a supplied trust anchor is the trust "
+                                      "input, not a certificate this run asks anyone to revoke: to be revocable a "
+                                      "trust anchor would need a root of trust above itself, and that regress is "
+                                      "exactly what the anchor exists to stop"))
+                # material that happens to list an anchor is worth naming, and is
+                # a FINDING rather than a refusal: refusing on it would turn a
+                # property of trust anchors into a defect of the package
+                listed = []
+                for c in usable_crl:
+                    if norm_serial(cert.get("serial")) in c["entries"]:
+                        listed.append("%s lists serial %s" % (os.path.relpath(c["path"]), cert.get("serial")))
+                for o in usable_ocsp:
+                    for entry in o["entries"]:
+                        if norm_serial(entry.get("serial")) == norm_serial(cert.get("serial")):
+                            listed.append("%s answers for serial %s (%s)"
+                                          % (os.path.relpath(o["path"]), cert.get("serial"),
+                                             entry.get("status")))
+                if listed:
+                    self.finding("  the supplied revocation material speaks about a TRUST ANCHOR (%s): %s. It is "
+                                 "reported and does not refuse the container — a trust anchor is the trust input, "
+                                 "and revocation of an anchor is a question for whoever anchors it, not for this "
+                                 "verifier (§9.3.1 MA-84, §10.7 MA-74)" % (item["label"], "; ".join(listed)))
                 continue
             key = cert_key(cert)
             mine = [c for c in usable_crl
@@ -1800,26 +1877,506 @@ class Verifier:
             else "no usable revocation material was supplied (%s)"
                  % ", ".join(os.path.relpath(m["path"]) for m in material))
 
-    # ── LTV, reported and never validated ─────────────────────────────────
+    # ── long-term validation, from material the CONTAINER carries ──────────
+    def ltv_entries(self):
+        """the container entries that carry long-term validation material.
+
+        Two shapes are recognised: anything under META-INF/ltv/ — the directory
+        §9.3.1 MA-84 names and the one the fixtures use — and any other *.tst that
+        is not the seal's own token. They are CARRIED EVIDENCE: each must be covered
+        by the ASiC manifest, so the CAdES seal over that manifest is what binds
+        their bytes, and there is no package file they are supposed to equal
+        (sealed_rows says exactly that rather than refusing them as absent)."""
+        return sorted(n for n in self.names
+                      if n != ASIC_TIMESTAMP
+                      and (n.startswith(LTV_DIR) or n.endswith(".tst")))
+
+    def ltv_imprint(self, text):
+        """the message imprint a timestamp CLAIMS to cover, as hex.
+
+        Read before its signature is checked and separately from it: a token whose
+        signature does not verify still says which bytes it is about, and that is
+        what lets a refusal accuse the right file instead of guessing."""
+        m = re.search(r"^Message data:\s*$", text, re.M | re.I)
+        if not m:
+            return None
+        pairs = []
+        for line in text[m.end():].splitlines():
+            if not pairs and not line.strip():
+                # the blank line right after the heading, before the hexdump
+                continue
+            seg = re.split(r"\s{2,}", line.strip(), maxsplit=1)[0]
+            if not re.match(r"^[0-9A-Fa-f]{4}\s*-\s", seg):
+                break
+            seg = re.sub(r"^[0-9A-Fa-f]{4}\s*-\s*", "", seg)
+            pairs.append(re.sub(r"[^0-9a-f]", "", seg.lower()))
+        return "".join(pairs) or None
+
+    def ltv_token_certs(self, info):
+        """the certificates an archival timestamp carries, so its OWN authority can
+        be date-checked at the time that timestamp establishes"""
+        der = os.path.join(self.tmp, "ltv-%s-token.der" % info["idx"])
+        pem = os.path.join(self.tmp, "ltv-%s-token.pem" % info["idx"])
+        self.openssl_run(["ts", "-reply", "-in", info["path"], "-token_out", "-out", der],
+                         label="the archival timestamp's PKCS#7 payload")
+        self.openssl_run(["pkcs7", "-inform", "DER", "-in", der, "-print_certs", "-out", pem],
+                         label="the certificates the archival timestamp carries")
+        return [c for c in (read_cert_text(self.openssl, p)
+                            for p in split_pem_certs(pem, self.tmp, "ltvtsa-%s" % info["idx"])) if c]
+
+    def ltv_issuer_path(self, cert):
+        """the file holding the certificate that issued `cert`, or None"""
+        issuer = self.cert_by_subject(cert.get("issuer"),
+                                      [i["cert"] for i in self.chain_certificates()])
+        if issuer is None:
+            return None
+        return next((i["path"] for i in self.chain_certificates()
+                     if cert_key(i["cert"]) == cert_key(issuer)), None)
+
+    def ltv_read(self, name, idx):
+        """one carried entry, read as whatever it is: an RFC 3161 timestamp, a CRL,
+        or an OCSP response. `kind` is None when it is none of the three, and that
+        is a refusal, never a skip."""
+        path = os.path.join(self.tmp, "ltv-%02d-%s" % (idx, os.path.basename(name)))
+        data = self.czf.read(name)
+        with open(path, "wb") as fh:
+            fh.write(data)
+        info = {"name": name, "path": path, "idx": "%02d" % idx, "sha256": sha256_bytes(data),
+                "kind": None, "imprint": None, "time": None, "why": None, "status": None,
+                "issuer": None, "this": None, "next": None, "responder": None,
+                "covers": {}, "entries": {}, "claims": {}, "uncheckable": False}
+
+        # an RFC 3161 timestamp: `openssl ts -reply` prints TST info for a token
+        # and nothing that looks like it for anything else
+        proc = self.openssl_run(["ts", "-reply", "-in", path, "-text"],
+                                label="is this carried entry an RFC 3161 timestamp, and what does it cover")
+        text = proc.stdout.decode("utf-8", "replace")
+        if "TST info" in text:
+            info["kind"] = "token"
+            info["imprint"] = self.ltv_imprint(text)
+            m = re.search(r"^Time stamp:\s*(.+?)\s*$", text, re.M)
+            info["time"] = parse_date(m.group(1)) if m else None
+            if info["imprint"] is None:
+                info["why"] = "it carries no message imprint this verifier can read"
+            return info
+
+        # a CRL
+        pem = os.path.join(self.tmp, "ltv-%02d.crl.pem" % idx)
+        if b"-----BEGIN X509 CRL-----" in data:
+            with open(pem, "wb") as fh:
+                fh.write(data)
+        else:
+            self.openssl_run(["crl", "-inform", "DER", "-in", path, "-outform", "PEM", "-out", pem],
+                             label="is this carried entry a DER CRL")
+        proc = self.openssl_run(["crl", "-in", pem, "-noout", "-text"],
+                                label="the carried CRL's issuer, window and entry list")
+        crltext = proc.stdout.decode("utf-8", "replace")
+        if proc.returncode == 0 and "Certificate Revocation List" in crltext:
+            info["kind"] = "CRL"
+            m = re.search(r"^\s*Issuer:\s*(.+?)\s*$", crltext, re.M)
+            info["issuer"] = m.group(1) if m else None
+            for key, field in (("Last Update", "this"), ("Next Update", "next")):
+                m = re.search(r"^\s*%s:\s*(.+?)\s*$" % key, crltext, re.M)
+                info[field] = parse_date(m.group(1)) if m else None
+            rev = re.search(r"^Revoked Certificates:\s*$", crltext, re.M)
+            if rev:
+                body = crltext[rev.end():]
+                cuts = [m.start() for m in re.finditer(r"^\s*Serial Number:", body, re.M)] + [len(body)]
+                for i in range(len(cuts) - 1):
+                    block = body[cuts[i]:cuts[i + 1]]
+                    m = re.search(r"Serial Number:\s*([0-9A-Fa-f:]+)", block)
+                    if not m:
+                        continue
+                    m2 = re.search(r"Revocation Date:\s*(.+?)\s*$", block, re.M)
+                    when = m2.group(1).strip() if m2 else "<none stated>"
+                    parsed = parse_date(when)
+                    info["entries"][norm_serial(m.group(1))] = (
+                        parsed.strftime(ISO) if parsed is not None else when)
+            # whose signature it carries: it must verify under the CA that issued
+            # the certificate it speaks for, and under no other, or it speaks for
+            # nobody in this chain
+            for item in self.chain_certificates():
+                if item["anchor"]:
+                    continue
+                ipath = self.ltv_issuer_path(item["cert"])
+                if ipath is None:
+                    # the certificate that issued this chain certificate is not
+                    # among the certificates this run holds, so the question "did
+                    # that CA sign this CRL" cannot be asked at all. That is a
+                    # missing input, never a defect of the value.
+                    if norm_dn(item["cert"].get("issuer")) == norm_dn(info["issuer"]):
+                        info["claims"][cert_key(item["cert"])] = item["label"]
+                    continue
+                proc = self.openssl_run(["crl", "-in", pem, "-CAfile", ipath, "-verify", "-noout"],
+                                        label="does the carried CRL %r's own signature verify under the issuer of %s"
+                                              % (name, item["label"]))
+                if proc.returncode != 0:
+                    continue
+                serial = norm_serial(item["cert"].get("serial"))
+                info["covers"][cert_key(item["cert"])] = {
+                    "label": item["label"], "cert": item["cert"],
+                    "status": "REVOKED" if serial in info["entries"] else "not listed",
+                    "this": info["this"], "next": info["next"],
+                    "when": info["entries"].get(serial)}
+            if not info["covers"]:
+                if info["claims"]:
+                    info["uncheckable"] = True
+                    info["why"] = ("the CRL is stated to be issued by %s, which issued %s, and that certificate is "
+                                   "not one this run holds — so whether this CRL's own signature verifies cannot be "
+                                   "checked here"
+                                   % (info["issuer"] or "<issuer unread>",
+                                      ", ".join(info["claims"].values())))
+                else:
+                    info["why"] = ("its own signature verifies under no certificate of this chain (it states its "
+                                   "issuer as %s, and no certificate here signed it)"
+                                   % (info["issuer"] or "<none stated>"))
+            return info
+
+        # an OCSP response
+        block = re.search(rb"-----BEGIN OCSP RESPONSE-----(.*?)-----END OCSP RESPONSE-----", data, re.S)
+        der = os.path.join(self.tmp, "ltv-%02d.ocsp.der" % idx)
+        if block:
+            import base64
+            try:
+                blob = base64.b64decode(re.sub(rb"\s+", b"", block.group(1)), validate=True)
+            except Exception:  # noqa: BLE001 - name it, do not guess at the bytes
+                blob = b""
+            with open(der, "wb") as fh:
+                fh.write(blob)
+        else:
+            with open(der, "wb") as fh:
+                fh.write(data)
+        proc = self.openssl_run(["ocsp", "-respin", der, "-resp_text", "-no_nonce"],
+                                label="is this carried entry an OCSP response, and what does it state")
+        otext = proc.stdout.decode("utf-8", "replace")
+        if "OCSP Response Status" in otext:
+            info["kind"] = "OCSP"
+            m = re.search(r"^\s*OCSP Response Status:\s*(.+?)\s*$", otext, re.M)
+            info["status"] = m.group(1) if m else None
+            m = re.search(r"^\s*Responder Id:\s*(.+?)\s*$", otext, re.M)
+            info["responder"] = m.group(1) if m else None
+            if info["status"] and not info["status"].startswith("successful"):
+                info["why"] = ("the responder answered %r — a response that is not successful states no status "
+                               "for any certificate" % info["status"])
+                return info
+            for chunk in re.split(r"(?m)^\s*Certificate ID:\s*$", otext)[1:]:
+                entry = {"serial": None, "status": None, "this": None, "next": None,
+                         "revtime": None, "reason": None}
+                m = re.search(r"Serial Number:\s*([0-9A-Fa-f:]+)", chunk)
+                entry["serial"] = m.group(1) if m else None
+                m = re.search(r"Cert Status:\s*(\w+)", chunk)
+                entry["status"] = m.group(1) if m else None
+                for key, field in (("This Update", "this"), ("Next Update", "next"),
+                                   ("Revocation Time", "revtime")):
+                    m = re.search(r"^\s*%s:\s*(.+?)\s*$" % key, chunk, re.M)
+                    entry[field] = parse_date(m.group(1)) if m else None
+                m = re.search(r"Revocation Reason:\s*(.+?)\s*$", chunk, re.M)
+                entry["reason"] = m.group(1) if m else None
+                if entry["serial"]:
+                    info["entries"][norm_serial(entry["serial"])] = entry
+            for item in self.chain_certificates():
+                if item["anchor"]:
+                    continue
+                if norm_serial(item["cert"].get("serial")) in info["entries"]:
+                    info["claims"][cert_key(item["cert"])] = item["label"]
+            bundle = getattr(self, "anchors_bundle", None)
+            if bundle is None:
+                info["why"] = ("no --trust-anchors was supplied, so the response's signer cannot be checked "
+                               "against an anchor and its own signature cannot be verified")
+                info["uncheckable"] = bool(info["claims"])
+                return info
+            for item in self.chain_certificates():
+                if item["anchor"]:
+                    continue
+                entry = info["entries"].get(norm_serial(item["cert"].get("serial")))
+                if entry is None:
+                    continue
+                ipath = self.ltv_issuer_path(item["cert"])
+                if ipath is None:
+                    continue
+                proc = self.openssl_run(
+                    ["ocsp", "-respin", der, "-issuer", ipath, "-cert", item["path"],
+                     "-CAfile", bundle, "-no_nonce"],
+                    label="does the carried OCSP response %r speak for %s, and does its own signature verify"
+                          % (name, item["label"]))
+                out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+                if "Response verify OK" not in out or "No Status found" in out:
+                    info["why"] = ("its own signature does not verify for %s under a signer that certificate's "
+                                   "issuer authorised (%s)"
+                                   % (item["label"], self.errline(proc) or "not verified"))
+                    continue
+                info["covers"][cert_key(item["cert"])] = {
+                    "label": item["label"], "cert": item["cert"],
+                    "status": "REVOKED" if (entry["status"] or "").lower() == "revoked" else entry["status"],
+                    "this": entry["this"], "next": entry["next"],
+                    "when": entry["revtime"].strftime(ISO) if entry["revtime"] else None}
+            if not info["covers"] and not info["why"]:
+                info["why"] = ("it names %s, none of which is a certificate of this chain"
+                               % ", ".join("serial %s" % e["serial"] for e in info["entries"].values()))
+            return info
+
+        info["why"] = ("it is neither an RFC 3161 timestamp, nor a CRL, nor an OCSP response this openssl "
+                       "can read")
+        return info
+
     def check_ltv(self):
-        material = sorted(n for n in self.names
-                          if n != ASIC_TIMESTAMP and (n.startswith("META-INF/ltv") or n.endswith(".tst")))
+        """long-term validation of the material the container CARRIES (§9.3.1 MA-84).
+
+        The claim `"ltv":true` asserts that for EVERY certificate in the chain this
+        run established the container carries (a) revocation evidence — a CRL or an
+        OCSP response — and (b) an RFC 3161 timestamp whose signature covers that
+        evidence. Each carried value is therefore asked four questions, and every
+        one of them can fail on its own:
+
+          * does its own signature verify, under the certificate that issued it;
+          * which certificate of this chain does it speak for;
+          * was it inside its window at the moment its archival timestamp
+            establishes — that time, never this host's clock;
+          * does the archival timestamp's own signature verify, and does its chain
+            reach a supplied anchor.
+
+        A value the container does not carry cannot be validated here and is NOT
+        fetched: this verifier has no network path at all, and the position of the
+        standard is that a check runs offline against the material the verifier was
+        given (§10.1 MA-68). A supplied trust anchor is not asked to be revocable —
+        to be revocable it would need a root of trust above itself, which is exactly
+        the regress the anchor exists to stop.
+        """
+        self.ltv_rows = []
+        self.ltv_established = []
+        material = self.ltv_entries()
         self.ltv_material = material
         claimed = self.claim.get("ltv")
-        if material:
-            self.ltv_state = ("present (%d entr%s: %s) — reported, NOT validated"
-                              % (len(material), "y" if len(material) == 1 else "ies", ", ".join(material)))
-            if claimed is False:
-                self.finding("  the container carries long-term validation material (%s) and the claim states "
-                             "ltv=false — reported, never validated (§9.3)" % ", ".join(material))
-        else:
-            self.ltv_state = "absent — reported, never validated"
+        carried = ", ".join(material) if material else "none"
+        refused_before = len(self.refusals)
+        undecided_before = len(self.undecided)
+
+        if not material:
             if claimed is True:
                 self.refuse("ltv: the claim states ltv=true and the container carries no long-term validation "
-                            "material — the evidence contradicts the claim (§9.3 MA-64)")
-        for name in material:
-            self.ignored.append("  container entry %-24s 1 — long-term validation material: listed, never parsed, "
-                                "never validated (§10.7)" % name)
+                            "material at all — the claim asserts revocation evidence and an archival timestamp for "
+                            "every certificate in the established chain, and the container carries neither, so the "
+                            "evidence contradicts the claim it was supposed to carry (§9.3.1 MA-84)")
+                self.ltv_state = ("REFUSED — the claim states ltv=true and the container carries no LTV material "
+                                  "(no %s<file> entry)" % LTV_DIR)
+                self.ltv_layer = "REFUSED — ltv=true with no carried material"
+            else:
+                self.ltv_state = ("absent — the container carries no long-term validation material and the claim "
+                                  "does not assert ltv=true (claim.ltv=%r), so no LTV was claimed by this package"
+                                  % (claimed,))
+                self.ltv_layer = "not claimed — claim.ltv=%r and no material is carried" % (claimed,)
+            return
+
+        if claimed is False:
+            self.ltv_state = ("present (%d entr%s: %s) and the claim states ltv=false — reported as a FINDING and "
+                              "NOT validated: the package claims no LTV, so there is no claim for the material to "
+                              "support and none for it to contradict (§9.3.1 MA-84)"
+                              % (len(material), "y" if len(material) == 1 else "ies", carried))
+            self.finding("  the container carries long-term validation material (%s) while the claim states "
+                         "ltv=false. It is reported, NOT validated, and it changes no exit code: a package that "
+                         "claims no LTV makes no assertion about preservation, and validating material for a claim "
+                         "the package does not make would answer a question it never asked — but a reader should ask "
+                         "why the material is there (§9.3.1 MA-84)" % carried)
+            self.ltv_layer = ("not claimed — ltv=false with %d carried material entr%s, reported as a finding"
+                              % (len(material), "y" if len(material) == 1 else "ies"))
+            for name in material:
+                self.ltv_rows.append((name, "carried, NOT validated — the claim states ltv=false"))
+            return
+
+        # ── ltv=true with material present: validate it ────────────────────
+        if not self.signer_certs:
+            self.cannot_decide("  ltv: the container carries long-term validation material (%s), but this run "
+                               "established no signer certificate, so there is no chain to validate it against and "
+                               "the LTV question CANNOT DECIDE (§10.3 MA-70)" % carried)
+            self.ltv_state = ("NOT validated — the container carries %d material entr%s, but no chain was "
+                              "established by this run (see 'not decidable')"
+                              % (len(material), "y" if len(material) == 1 else "ies"))
+            self.ltv_layer = "NOT checked — no chain was established, so the LTV question cannot be decided"
+            for name in material:
+                self.ltv_rows.append((name, "carried, NOT validated — no chain was established"))
+            return
+
+        parsed = [self.ltv_read(name, idx) for idx, name in enumerate(material)]
+        tokens = [p for p in parsed if p["kind"] == "token"]
+        values = [p for p in parsed if p["kind"] in ("CRL", "OCSP")]
+        for p in parsed:
+            if p["kind"] is None:
+                self.refuse("ltv: the container carries %r as long-term validation material and it is neither an "
+                            "RFC 3161 timestamp nor a CRL nor an OCSP response this openssl can read — %s. A value "
+                            "whose kind cannot be established validates nothing, and it is not skipped "
+                            "(§9.3.1 MA-84)" % (p["name"], p["why"]))
+                self.ltv_rows.append((p["name"], "UNUSABLE — %s" % p["why"]))
+
+        # which certificate of the chain each usable value speaks for — and, kept
+        # apart from that, which ones it CLAIMS to speak for while this run cannot
+        # check the claim (a missing input, not a bad value)
+        spoken, claimed = {}, {}
+        for v in values:
+            if not v["covers"]:
+                if v["uncheckable"]:
+                    self.cannot_decide("  ltv: the carried %s %r cannot be checked on this run — %s. The value is "
+                                       "not refuted, it is unverifiable here, and it is not counted as evidence "
+                                       "for anyone (§10.3 MA-70)" % (v["kind"], v["name"], v["why"]))
+                    self.ltv_rows.append((v["name"], "NOT checked — %s" % v["why"]))
+                    for key, label in v["claims"].items():
+                        claimed.setdefault(key, []).append((v, label))
+                else:
+                    self.refuse("ltv: the carried %s %r speaks for no certificate of the established chain — %s. A "
+                                "value that speaks for nothing is evidence for nothing in this container "
+                                "(§9.3.1 MA-84)" % (v["kind"], v["name"], v["why"]))
+                    self.ltv_rows.append((v["name"], "speaks for NO certificate of this chain — %s" % v["why"]))
+                continue
+            for key, cov in v["covers"].items():
+                spoken.setdefault(key, []).append((v, cov))
+
+        # (a) every certificate of the established chain must have revocation evidence
+        for item in self.chain_certificates():
+            if item["anchor"]:
+                self.ltv_rows.append((item["label"], "not required — a supplied trust anchor is not revocable: to "
+                                                     "be revocable it would need a root of trust above itself, "
+                                                     "which is the regress the anchor exists to stop"))
+                continue
+            if cert_key(item["cert"]) not in spoken and cert_key(item["cert"]) in claimed:
+                who = "; ".join("%r (%s)" % (v["name"], label) for v, label in claimed[cert_key(item["cert"])])
+                self.cannot_decide("  ltv: %s is spoken for only by %s, and whether that value's own signature "
+                                   "verifies cannot be checked on this run, so this certificate's revocation "
+                                   "evidence is NOT validated (§10.3 MA-70)" % (item["label"], who))
+                self.ltv_rows.append((item["label"], "NOT validated — its only carried evidence could not be "
+                                                     "checked here (%s)" % who))
+                self.ltv_established.append((item["label"], "nothing — its evidence could not be verified here"))
+                continue
+            if cert_key(item["cert"]) not in spoken:
+                self.refuse("ltv: the container carries no revocation evidence for %s. The claim states ltv=true, "
+                            "which asserts a CRL or an OCSP response for EVERY certificate in the established "
+                            "chain, and nothing the container carries speaks for this one (§9.3.1 MA-84)"
+                            % item["label"])
+                self.ltv_rows.append((item["label"], "NO revocation evidence carried for this certificate"))
+                self.ltv_established.append((item["label"], "nothing — no carried value speaks for it"))
+
+        # (b) every carried value must be covered by an archival timestamp, and
+        #     that timestamp must verify and state a time
+        for v in values:
+            hit = [t for t in tokens if t["imprint"] == v["sha256"]]
+            if not hit:
+                names = ", ".join(t["name"] for t in tokens) or "no timestamp at all"
+                self.refuse("ltv: the carried value %r has no archival timestamp whose message imprint covers its "
+                            "bytes — the container carries %s, and none of them is about these bytes, so nothing "
+                            "establishes when this value was already true (§9.3.1 MA-84)" % (v["name"], names))
+                self.ltv_rows.append((v["name"], "NO archival timestamp covers it — carried: %s" % names))
+                continue
+            chosen, broken, undecided = None, [], False
+            bundle = getattr(self, "anchors_bundle", None)
+            for t in hit:
+                if bundle is None:
+                    self.cannot_decide("  ltv: the archival timestamp %r covers %r, but no --trust-anchors was "
+                                       "supplied, so its own signature cannot be checked against an anchor and the "
+                                       "time it states cannot be relied on — the LTV question CANNOT DECIDE "
+                                       "(§10.3 MA-70)" % (t["name"], v["name"]))
+                    self.ltv_rows.append((t["name"], "covers %r, but no trust anchor was supplied to verify it"
+                                          % v["name"]))
+                    undecided = True
+                    break
+                proc = self.openssl_run(["ts", "-verify", "-in", t["path"], "-data", v["path"],
+                                         "-CAfile", bundle, "-no_check_time"],
+                                        label="does %r's signature verify over %r and chain to a supplied anchor"
+                                              % (t["name"], v["name"]))
+                if proc.returncode != 0:
+                    broken.append("%s (%s)" % (t["name"], self.errline(proc) or "signature does not verify"))
+                    continue
+                if t["time"] is None:
+                    self.cannot_decide("  ltv: the archival timestamp %r verifies over %r, but the time it "
+                                       "establishes cannot be read, so whether %r was inside its window at that time "
+                                       "CANNOT DECIDE, and the window check is NOT skipped (§10.3 MA-70)"
+                                       % (t["name"], v["name"], v["name"]))
+                    self.ltv_rows.append((t["name"], "verifies over %r, but its own time is unreadable — the window "
+                                          "check CANNOT DECIDE" % v["name"]))
+                    undecided = True
+                    break
+                # the timestamp's own authority, held to the time it states
+                for cert in self.ltv_token_certs(t):
+                    self.date_check_cert("the archival timestamp's authority %s (in %s)"
+                                         % (cert.get("subject"), t["name"]), cert,
+                                         when=t["time"],
+                                         source="the time that timestamp establishes")
+                chosen = t
+                break
+            if undecided:
+                continue
+            if chosen is None:
+                self.refuse("ltv: the archival timestamp(s) that claim to cover %r do not verify — %s. A timestamp "
+                            "whose own signature does not verify establishes no time, so the window of this value "
+                            "cannot be checked against it (§9.3.1 MA-84)" % (v["name"], "; ".join(broken)))
+                self.ltv_rows.append((v["name"], "its archival timestamp does not verify — %s" % "; ".join(broken)))
+                continue
+            v["time"] = chosen["time"]
+            v["token"] = chosen["name"]
+            self.ltv_rows.append((v["name"], "archival timestamp %r covers these bytes and verifies, establishing "
+                                             "the time every window below is checked at" % chosen["name"]))
+
+        # (c) each value's window, at the time its own timestamp establishes
+        for item in self.chain_certificates():
+            if item["anchor"]:
+                continue
+            rows, what = [], None
+            for v, cov in spoken.get(cert_key(item["cert"]), []):
+                if cov["status"] == "REVOKED":
+                    self.refuse("ltv: %s is REVOKED by the carried %s %r (revocation date %s). The material the "
+                                "container itself carries says this certificate was revoked, so the seal it made is "
+                                "refuted by the package's own evidence (§9.3.1 MA-84)"
+                                % (item["label"], v["kind"], v["name"], cov.get("when") or "<none stated>"))
+                    rows.append("REVOKED by %r (revocation date %s)"
+                                % (v["name"], cov.get("when") or "<none stated>"))
+                    what = "REVOKED — see refusals"
+                    continue
+                if v.get("time") is None:
+                    rows.append("%r — its archival time could not be established, so its window is NOT checked"
+                                % v["name"])
+                    what = what or "nothing — no archival time could be established"
+                    continue
+                when = v["time"].strftime(ISO)
+                if cov["this"] is None or cov["next"] is None:
+                    self.cannot_decide("  ltv: the carried %s %r states no usable window for %s (thisUpdate %r, "
+                                       "nextUpdate %r), so whether it was inside its window at the archival time %s "
+                                       "CANNOT DECIDE (§10.3 MA-70)"
+                                       % (v["kind"], v["name"], item["label"], cov["this"], cov["next"], when))
+                    rows.append("%r — window unreadable, NOT checked at %s" % (v["name"], when))
+                    what = what or "nothing — its window cannot be read"
+                    continue
+                win = "%s .. %s" % (cov["this"].strftime(ISO), cov["next"].strftime(ISO))
+                if not (cov["this"] <= v["time"] <= cov["next"]):
+                    which = "EXPIRED" if v["time"] > cov["next"] else "NOT YET VALID"
+                    self.refuse("ltv: the carried %s %r was %s at the time the archival timestamp %r establishes "
+                                "(%s) — its window is %s, so at that moment it stated nothing and the certificate it "
+                                "speaks for has no validated status (§9.3.1 MA-84)"
+                                % (v["kind"], v["name"], which, v.get("token") or "?", when, win))
+                    rows.append("%r — %s at the archival time %s (window %s)" % (v["name"], which, when, win))
+                    what = what or "nothing — out of its window at the archival time"
+                    continue
+                rows.append("%r %s for it (window %s), inside that window at the archival time %s of %r"
+                            % (v["name"], cov["status"], win, when, v.get("token") or "?"))
+                what = ("VALIDATED — %s %s, window %s, inside it at %s of the archival timestamp %r, whose own "
+                        "signature verified against the supplied anchors"
+                        % (v["kind"], cov["status"], win, when, v.get("token") or "?"))
+            if rows:
+                self.ltv_rows.append((item["label"], "; ".join(rows)))
+            if what:
+                self.ltv_established.append((item["label"], what))
+
+        if len(self.refusals) > refused_before:
+            self.ltv_state = ("REFUSED — the material the container carries does not support the ltv=true claim "
+                              "(see refusals)")
+            self.ltv_layer = "REFUSED — the carried LTV material does not support the claim"
+        elif len(self.undecided) > undecided_before:
+            self.ltv_state = ("carried material read, but the LTV question CANNOT DECIDE (see 'not decidable')")
+            self.ltv_layer = "NOT decided — the carried material could not be tied to a time"
+        else:
+            names = ", ".join("%s over %s" % (v.get("token"), v["name"]) for v in values if v.get("token"))
+            self.ltv_state = ("VALIDATED — %d carried value(s), each inside its window at the time its own "
+                              "archival timestamp establishes, each timestamp verified against the supplied "
+                              "anchors, and each certificate of the established chain spoken for (%s)"
+                              % (len(values), names or "no value"))
+            self.ltv_layer = ("validated for the material the container carries — %d value(s), %d certificate(s) "
+                              "spoken for" % (len(values), len(self.ltv_established)))
 
 
 def norm_serial(serial):
@@ -2013,9 +2570,14 @@ exit codes
                      that moved, a signature that does not verify, a signer that
                      is a CA, any signer or chain certificate that was not valid
                      at the claimed time, a token from a TSA certificate that was
-                     not, a seal the operator co-signed, or a certificate that a
+                     not, a seal the operator co-signed, a certificate that a
                      supplied CRL lists — or a supplied OCSP response reports —
-                     as revoked
+                     as revoked, or, when the claim states ltv=true, a carried
+                     long-term validation value that is MISSING for a chain
+                     certificate, that was EXPIRED (or not yet valid) at the time
+                     its own archival timestamp establishes, that has no archival
+                     timestamp over its bytes, or whose archival timestamp does
+                     not verify (§9.3.1 MA-84)
   2  USAGE/UNREADABLE  bad invocation, an unreadable input, or a package that
                      does not claim the P3 profile
   3  CANNOT DECIDE   an input this verifier needs to decide was not supplied or
@@ -2024,16 +2586,32 @@ exit codes
                      claimed time, or revocation material that is expired, not
                      yet valid, of unverifiable signature, of unsuccessful
                      response status, that answers 'unknown', that parses as
-                     neither a CRL nor an OCSP response, or that speaks for only
-                     part of the chain
+                     neither a CRL nor an OCSP response, that speaks for only part
+                     of the chain, or a carried archival timestamp whose own time
+                     cannot be established (the LTV question CANNOT DECIDE and the
+                     window check is not skipped)
 
 Every signer of every signature entry is enumerated and checked: the operator
 exclusion and the certificate-date check are made over the whole signer set, not
 over the first certificate found. Revocation is checked ONLY against the
 material you supply with --revocation, --ocsp-response and --revocation-dir:
-this verifier never downloads a CRL, never requests an OCSP response, never
-contacts a responder, and never validates long-term validation material. Every
-run says so in its own report, in the state the run is actually in.
+this verifier never downloads a CRL, never requests an OCSP response and never
+contacts a responder.
+
+Long-term validation IS validated, for the material the container CARRIES and for
+nothing else (§9.3.1 MA-84). When the claim states "ltv":true, the container must
+carry, under META-INF/ltv/, revocation evidence (a CRL or an OCSP response) for
+every certificate of the established chain and an RFC 3161 timestamp whose
+signature covers that evidence; each value's own signature is verified under the
+certificate that issued it, the certificate it speaks for is identified, and it
+is checked inside its window at the time its own archival timestamp establishes.
+A value that is missing, expired at that time, unverifiable or about no
+certificate of the chain refuses the container by name. "ltv":false with material
+present is a FINDING and leaves the exit code alone. A value the container does
+not carry is not validated and is never fetched, and a supplied trust anchor is
+not asked to be revocable: to be revocable it would need a root of trust above
+itself, which is the regress the anchor exists to stop. Every run says all of
+this in its own report, in the state the run is actually in.
 """)
     stream.write("residual (§3.3)\n%s\n%s\n" % (RESID1, RESID2))
 
@@ -2310,10 +2888,19 @@ def main(argv=None):
                 o("  signer spki      %s   %s (%s)" % (cert.get("spki") or "?", cert.get("subject"), name))
     o("  verdict          %s" % getattr(v, "operator_state", "not reached"))
 
-    # LTV
+    # LTV — the material the container carries, validated (§9.3.1 MA-84)
     o()
-    o("long-term validation")
-    o("  %s" % getattr(v, "ltv_state", "absent — reported, never validated"))
+    o("long-term validation (§9.3.1 MA-84)")
+    o("  %s" % getattr(v, "ltv_state", "not reached"))
+    if getattr(v, "ltv_rows", None):
+        for name, what in v.ltv_rows:
+            o("  - %s: %s" % (name, what))
+    if getattr(v, "ltv_established", None):
+        o("  therefore established, per certificate of the established chain:")
+        for label, what in v.ltv_established:
+            o("  - %s: %s" % (label, what))
+    elif getattr(v, "claim", {}).get("ltv") is True:
+        o("  nothing is established per certificate: see refusals and 'not decidable' above")
 
     # revocation — from the CRLs this run was handed, and nothing else
     o()
@@ -2372,7 +2959,13 @@ def main(argv=None):
     else:
         operator_layer = v.layer.get("operator", "not reached")
     o("  p3.6     operator exclusion  %s" % operator_layer)
-    o("  p3.7     long-term validation NOT checked by any run of this verifier — reported present or absent only")
+    if not have:
+        ltv_layer = v.layer.get("structure", "NOT checked — missing input: --container")
+    elif v.claim.get("ltv") is True:
+        ltv_layer = getattr(v, "ltv_layer", "not reached")
+    else:
+        ltv_layer = getattr(v, "ltv_layer", "not claimed — claim.ltv=%r" % (v.claim.get("ltv"),))
+    o("  p3.7     long-term validation %s" % ltv_layer)
     if not have:
         rev_layer = v.layer.get("revocation", "NOT checked — missing input: --container")
     elif not armed_revocation(args):

@@ -1,0 +1,52 @@
+vector: 59-ltv-valid
+what:   the claim states "ltv":true and the container CARRIES the material the
+        claim asserts (§9.3.1 MA-84): under META-INF/ltv/, one CRL for the sealer's
+        issuer (intermediate A), one CRL for the intermediate's issuer (root A), and
+        one RFC 3161 archival timestamp over each CRL's exact bytes, all four
+        entries listed in the ASiC manifest so the CAdES seal covers them. Each
+        value's own signature verifies under the certificate that issued it, each
+        names the certificate of the chain it speaks for, each is inside its window
+        at the time its own archival timestamp establishes, and each timestamp's
+        signature verifies against the supplied anchors. This is the arm in which
+        the LTV question reaches a PASS, and the run names every value it validated
+run:    validator/p3-verify --container vectors/59-ltv-valid/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/59-ltv-valid/pkg
+exit:   0
+also:   validator/p3-verify --container vectors/63-ltv-unclaimed-material/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/63-ltv-unclaimed-material/pkg   ->  exit 0
+        the CONTROL for "the material alone never refuses": the same four entries,
+        the same bytes, under a claim that states ltv=false — a finding and no
+        refusal, so the exit code here is decided by the CLAIM and not by the
+        material's presence
+        validator/p3-verify --container vectors/59-ltv-valid/seal.asice \
+          --operator-cert vectors/pki/operator.crt.pem vectors/59-ltv-valid/pkg   ->  exit 3
+        the same container with --trust-anchors withheld: the CRLs' issuer is then
+        not a certificate this run holds and the timestamps have no anchor to
+        verify against, so the LTV question is NOT decided — exit 3, never a pass
+        and never a refusal that says the material is bad
+        validator/p3-verify --container vectors/34-seal-verified/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem vectors/34-seal-verified/pkg   ->  exit 0
+        the CONTROL for the claim: the same construction with ltv=false and no
+        material carried — nothing is claimed and nothing is validated
+must print:
+  - "VALIDATED — 2 carried value(s)"
+  - "archival timestamp 'META-INF/ltv/crl-intermediateA-clean.pem.tst' covers these bytes and verifies"
+  - "archival timestamp 'META-INF/ltv/crl-rootA-clean.pem.tst' covers these bytes and verifies"
+  - "inside it at"
+  - "whose own signature verified against the supplied anchors"
+  - "not required — a supplied trust anchor is not revocable"
+  - "carried evidence — the seal covers these bytes"
+  - "p3.7     long-term validation validated for the material the container carries"
+requirements exercised: MA-64, MA-70, MA-84
+why it fails without the fix: MEASURED against the pre-fix tool (git show
+        HEAD:validator/p3-verify): exit 1, with four refusals of the form "seal: the
+        container covers 'META-INF/ltv/...', but the package holds no such file".
+        Pre-fix, ANY manifest-covered entry without a file on disk was a refusal, so
+        carried evidence could not exist in a conformant container at all; the
+        asymmetry on this vector is 1 (pre-fix) against 0 (post-fix). The material
+        is unchanged in this arm — it is the tool that changed.

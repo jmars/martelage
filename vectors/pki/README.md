@@ -38,6 +38,7 @@
 | `crl-intermediateA-expired.pem` | the same CA, same key, **no** entries, window `2020-01-01 .. 2021-01-01`: the CRL whose `nextUpdate` is in the past, on any host at any time |
 | `crl-rootA-clean.pem` | root A's CRL, no entries: the CA that issued intermediate A, so the intermediate is spoken for |
 | `crl-rootB-clean.pem` | root B's CRL, no entries: a perfectly valid CRL from a CA that issued **nothing** in the vectors' chain — the "wrong issuer" arm |
+| `ltv/` | the material the long-term-validation vectors **carry inside their containers**: copies of `crl-intermediateA-clean.pem`, `crl-rootA-clean.pem`, `crl-intermediateA-expired.pem` and `ocsp-signerA-good.der`, each with an RFC 3161 `.tst` timestamp over its exact bytes, built by `tools/mklv.sh`. Nothing here is handed to the verifier on the command line: `tools/mkp3.sh` carries these files into a container as `META-INF/ltv/` entries, and the ASiC manifest covers them so the seal binds them |
 | `anchors/` | the verifier's trust store: root A. `--trust-anchors vectors/pki/anchors` |
 | `anchors-b/` | root A **and** root B: the same store plus the one file that decides vector 36 |
 

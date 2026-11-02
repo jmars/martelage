@@ -600,7 +600,8 @@ inclusion undecided, so it reports exit code 3 and names what it could and could
 
 **P3, wire string `p3-eidas-qualified-seal-asic-e`** — an ETSI EN 319 162-1 ASiC-E container holding the package
 files with a CAdES or XAdES signature over their digests, created by a legal person other than the
-operator, with a qualified electronic time stamp and optional long-term validation.
+operator, with a qualified electronic time stamp and optional long-term validation — §9.3.1 defines
+what an `"ltv":true` claim asserts and what a verifier MUST check about it.
 Claim: `{"container":<reference>,"sealer":<legal person>,"seal":"qualified-electronic-seal",
 "timestamp":"qualified"|"none","ltv":<bool>}`.
 Evidence: the container plus the verifier's trust anchors. The base validator cannot verify a
@@ -616,6 +617,76 @@ prior packages by the other party, so the seal multiplies the chain and does not
 **(iii)** the legal presumption that attaches to a qualified seal is a presumption about integrity
 and origin, not a technical guarantee of truth or completeness, and it MUST be kept distinct from
 the residual of §3.3 in any document that cites both.
+
+**9.3.1 What an LTV claim asserts, and what a verifier MUST check.** This subsection defines
+long-term validation **at this version**, so that a verifier can cite a requirement rather than an
+intention. The definition is read off this document's own words — §9.3's "optional long-term
+validation" and Annex B item 10, which records that ETSI EN 319 162-1 defines the associated-signature
+containers "with a long-term-availability section" — and it is a **profiled** definition, not a
+restatement of that standard's long-term-availability construction: what it requires is the evidence
+a verifier holding only this package can check offline, and nothing beyond that. — **MA-84**
+
+*A claim of LTV is an assertion about what the container carries.* When `anchor.claim.ltv` is `true`,
+the package asserts that the container carries, **for every certificate of the chain the verifier
+establishes** by §9.3's rules and excluding the supplied trust anchors, (a) **revocation evidence** —
+a CRL or an OCSP response — and (b) an **archival timestamp**, an RFC 3161 time-stamp token whose
+signature covers that evidence's exact bytes. The material MUST be carried **inside the container and
+covered by the seal**: an entry that nothing covers is not evidence (§9.3), and the manifest-signature
+form is what binds these bytes. Material the container does not carry is not LTV at this version, and
+a verifier MUST NOT go and fetch it: **no validator defined by this document has a network path**, and
+that is a property of the check, not a gap in it — a validation check that depends on a fetch at
+verification time depends on a service that may be gone precisely when the evidence is needed, which
+is the failure long-term validation exists to prevent.
+
+*A verifier MUST check each carried value, and every one of these checks can fail on its own:*
+
+* the value's **own signature verifies** under the certificate that issued it, and, for an OCSP
+  response, under a signer that certificate's issuer authorised;
+* the value **identifies the certificate** of the established chain it speaks for — a CRL by its
+  issuing CA, a response by its CertID — and a value that speaks for no certificate of the chain is
+  not evidence for any of them;
+* the value was **inside its window** (`thisUpdate` .. `nextUpdate`) **at the time the archival
+  timestamp establishes**, which is the only time this check has evidence for, and never the verifying
+  host's clock;
+* the **archival timestamp's own signature verifies**, its message imprint covers that value's bytes,
+  its chain reaches a supplied trust anchor, and its timestamping authority's certificate was valid at
+  the time that timestamp states.
+
+*The outcomes are distinct, and only one of them may pass:*
+
+* `"ltv":true` with material that is **complete, valid and correctly timed** — the run MAY report
+  conformance, and it MUST say what it validated, naming each carried value, each archival timestamp,
+  the window each value was checked against and the time it was checked at.
+* `"ltv":true` with material **absent or incomplete** — a certificate of the chain with no evidence, or
+  a carried value with no archival timestamp over its bytes — MUST be refused (exit code 1, §10.3): the
+  claim is contradicted by the evidence it was supposed to carry, and the refusal names what is
+  missing.
+* `"ltv":true` with material present but **expired at the archival time, not yet valid then,
+  unverifiable, or speaking for no certificate of the chain** — MUST be refused, naming the value and
+  the reason. A value that states its status only for a time before it was archived validates nothing
+  about the certificate.
+* **A value a certificate was revoked by** refuses the container: the package's own evidence then
+  refutes the seal it carries.
+* `"ltv":false` — the run MUST report that no LTV was claimed, and MUST NOT report any validation of
+  material as if a claim had been made.
+* `"ltv":false` with material **present** — a **finding**, not a refusal, and the exit code is
+  unchanged: the package makes no assertion for the material to support, and a verifier that refused
+  here would be refusing a package for carrying more evidence than it claims.
+* If an archival timestamp's own **time cannot be established** — its signature does not verify, no
+  supplied anchor reaches its authority, or the time it states cannot be read — the LTV question is
+  **CANNOT DECIDE** (exit code 3, §10.3). It MUST NOT be reported as validated, and the window check
+  MUST NOT be silently skipped: the report says which value could not be tied to a time.
+
+*Two limits travel with this subsection, and MUST be stated wherever LTV validation is offered.*
+**(a)** A **trust anchor is not revocable**, and its lack of revocation evidence is not an omission to
+repair: to be revocable an anchor needs a root of trust above itself, and that regress is exactly what
+the anchor exists to stop. A verifier MUST NOT require revocation evidence for a supplied trust anchor;
+material that happens to speak about one MAY be reported as a finding and MUST NOT refuse on that
+ground alone. **(b)** What is validated is **the material this container carries, for the chain this
+run established** — not that the material was the material available at the time, not that an archive
+has preserved these bytes since, and not the status of anything the container does not mention. Those
+are questions for the archive that holds the package and for the services that publish the material,
+and outside this profile they stay open.
 
 **9.4 An unknown profile name is an unverifiable claim.** A validator MUST refuse (exit code 1) a
 package whose `profile` it does not know, rather than ignoring the claim. — **MA-65**
@@ -772,8 +843,12 @@ profiles of §9 but shipped a verifier for none of the anchored ones. At `martel
 `validator/p3-verify`, the P3 profile's verifier (§9.3, `p3-eidas-qualified-seal-asic-e`): the ASiC-E
 container, the CAdES seal, the RFC 3161 token and the whole chain each signer reaches. With it comes
 revocation **as an input, never as a fetch** — `--revocation FILE` for a CRL, `--ocsp-response FILE`
-for an OCSP response, and `--revocation-dir DIR` for a directory of both. No wire byte is involved in
-any of that: it is the surface a *checker* offers, not a change to what a package may contain.
+for an OCSP response, and `--revocation-dir DIR` for a directory of both — and long-term validation of
+the material a container **carries**, under the definition this bump adds as §9.3.1 (MA-84). No wire
+byte is involved in any of that: it is the surface a *checker* offers, not a change to what a package
+may contain. The one thing that DID change for the wire is MA-84's requirement that carried LTV
+material be covered by the seal: a container carrying it under `META-INF/ltv/` and covered by the ASiC
+manifest is what this version describes, and it is what `validator/p3-verify` checks.
 
 *What did not move:* the wire format. It stays `"v":1`. No field was added, removed or re-meant; no
 requirement of §2 through §10 changed its meaning. **A package written for `martelage 0.1` is a

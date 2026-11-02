@@ -33,8 +33,8 @@ reader cannot credit the weakest layer with the strength of the strongest.
 |---|---|
 | `spec/MARTELAGE-0.1.md` | the standard. Every normative requirement carries an identifier (`MA-1` … `MA-83`) so a conformance report can cite it. |
 | `validator/martelage-verify` | the reference validator: POSIX shell + the set §10.1 names (`awk`, `sed`, `grep`, `cmp`, `sort`, `sha256sum`, `tr`, `cut`, `head`, `tail`, `wc`, `find`, `mktemp`, `rm`, `cat`). No network, no interpreter beyond those, no keys, no service, no producer. |
-| `validator/p3-verify` | the P3 profile verifier (§9.3 `p3-eidas-qualified-seal-asic-e`): python3 and the `openssl` binary, no third-party library and no network path. Verifies an ASiC-E container's CAdES seal (the detached manifest-signature construction, checked as the construction before anything else is accused), **every signer of every signature entry** and the whole chain each one reaches, the digests it covers, an RFC 3161 token with the TSA's own chain, and revocation **only against CRLs you hand it** with `--revocation` — and prints what it cannot check on every run. A second implementation: `martelage-verify` keeps its zero-dependency property untouched. |
-| `tools/` | `mkpki.sh` (the throwaway test PKI), `mkcrl.sh` (the CRLs the revocation vectors hand the verifier), `mkocsp.sh` (the OCSP responses they hand it), `mkasic.py` (the ASiC-E container builder), `mkp3.sh` (rebuilds the P3 vectors), and the two scripts that render the site's print artifact. |
+| `validator/p3-verify` | the P3 profile verifier (§9.3 `p3-eidas-qualified-seal-asic-e`): python3 and the `openssl` binary, no third-party library and no network path. Verifies an ASiC-E container's CAdES seal (the detached manifest-signature construction, checked as the construction before anything else is accused), **every signer of every signature entry** and the whole chain each one reaches, the digests it covers, an RFC 3161 token with the TSA's own chain, revocation **only against material you hand it** (`--revocation`, `--ocsp-response`, `--revocation-dir`), and **long-term validation of the material a container carries** (§9.3.1 MA-84) — and prints what it cannot check on every run. A second implementation: `martelage-verify` keeps its zero-dependency property untouched. |
+| `tools/` | `mkpki.sh` (the throwaway test PKI), `mkcrl.sh` (the CRLs the revocation vectors hand the verifier), `mkocsp.sh` (the OCSP responses they hand it), `mklv.sh` (the archival timestamps the long-term-validation vectors carry, built with `openssl ts`), `mkasic.py` (the ASiC-E container builder), `mkp3.sh` (rebuilds the P3 vectors), and the two scripts that render the site's print artifact. |
 | `vectors/` | fifty-eight hand-made packages and their fixtures, with their expected results. Constructed for the standard; none is exported from a producer system. |
 | `LICENSE` | the licence split: specification text CC BY 4.0, code Apache-2.0. |
 
@@ -153,6 +153,26 @@ because a positive statement of revocation is not cancelled by a `good` from som
 names both files. Nothing is
 fetched, at any point: every file is material the verifier was handed.
 
+**Long-term validation is validated, not merely noticed** (§9.3.1 MA-84). When the claim states
+`"ltv":true`, the container must **carry**, under `META-INF/ltv/` and covered by the ASiC manifest so
+the seal binds it, revocation evidence — a CRL or an OCSP response — for **every** certificate of the
+chain the run established, and for each value an RFC 3161 **archival timestamp whose signature covers
+that value's exact bytes**. The run then checks, for each carried value: that its own **signature
+verifies** under the certificate that issued it; **which certificate of the chain it speaks for**;
+that it was **inside its window at the time its own archival timestamp establishes** — that time, never
+this host's clock; and that the **archival timestamp's signature verifies**, that its imprint covers
+the value's bytes, that its chain reaches a supplied **anchor**, and that its own authority was valid
+at the time it states. The four outcomes are distinct and only one may pass: complete, valid and
+correctly timed material → the run may report conformance and must **name every value it validated**;
+absent or incomplete material → refused, naming what is missing; material present but expired at the
+archival time, unverifiable, revoked, or speaking for nothing → refused, naming the value; and a time
+that **cannot be established** → CANNOT DECIDE, with the window check said out loud rather than
+skipped. `"ltv":false` reports that no LTV was claimed, and material carried under `"ltv":false` is a
+**finding** that leaves the exit code alone. A value the container does not carry is **not fetched** —
+this verifier has no network path, and that is a property of the definition, not a backlog item — and
+a supplied **trust anchor is not revocable**: to be revocable it would need a root of trust above
+itself, which is the regress the anchor exists to stop.
+
 **What it does not check, on any run.** Every run prints a section headed `not checkable by this
 verifier (every run)` before its verdict, in the state the run is actually in: revocation (unarmed,
 the entry says no CRL and no OCSP response is read and no OCSP responder is contacted — there is no
@@ -161,8 +181,14 @@ revocation status; armed, it says exactly which material was used, with each CRL
 `thisUpdate`, `nextUpdate` and entry count and each response's signer, status and window, and that a
 certificate no supplied material speaks for has no revocation status here, that a revocation published
 after a CRL's or a response's `nextUpdate` is invisible, that a supplied status is the status **now**
-and not at the claimed time, and that long-term validation is still never validated); long-term validation (LTV material is reported present or absent
-and is never validated); the truth and completeness of the records (§9.3 limit iii); the signer's legal
+and not at the claimed time, and that long-term validation is validated only for the material the
+container carries, never for a file supplied to the run); long-term validation beyond what the
+container carries (the material the container carries **is** validated, §9.3.1 MA-84; what stays
+outside is a validation value the container does not carry — nothing is fetched — the preservation of
+the package by an archive authority over future years, whether the archival timestamps' own
+authorities are themselves revoked, and the revocation of a supplied trust anchor, which is not an
+omission to repair: to be revocable an anchor needs a root of trust above itself, and that regress is
+what the anchor exists to stop); the truth and completeness of the records (§9.3 limit iii); the signer's legal
 identity beyond the subject its certificate claims; whether the certificate was issued for sealing at
 all (this standard defines no key-usage profile for a seal, so the chain is verified with `-purpose
 any`, and that is stated rather than assumed — the CA bit is the one key-usage-shaped property that
@@ -179,9 +205,12 @@ is not what it parses and it will not report that as verified. A container of an
 **refused**, not absorbed: an embedded-content CMS, the concatenated-digest form and XAdES are all
 shapes this verifier does not implement, and a run that met one says which shape it met. Not a
 revocation service either: `--revocation`, `--ocsp-response` and `--revocation-dir` check the
-material they are handed and nothing else, and there is no live OCSP, no CRL download, no OCSP request
-and no long-term-validation checking anywhere in the tool. It does not
-make `martelage-verify` verify seals, and a P3 claim handed to the base validator still reports exit 3.
+material they are handed and nothing else, and there is no live OCSP, no CRL download and no OCSP
+request anywhere in the tool. Long-term validation is validated **for the material the container
+carries** — the definition of §9.3.1 (MA-84) and its stated limits — and for nothing outside the
+container: a validation value this verifier was not given is not fetched, and the tool says so on every
+run. It does not make `martelage-verify` verify seals, and a P3 claim handed to the base validator
+still reports exit 3.
 
 ### The P3 fixtures, and how to rebuild them
 
@@ -202,7 +231,8 @@ key material is regenerated on every run, so regenerating the PKI means rebuildi
 sh tools/mkpki.sh      # the test PKI: new keys, the same dates and layout, then the CRLs and responses
 sh tools/mkcrl.sh      # just the CRLs, from the certificates already in vectors/pki
 sh tools/mkocsp.sh     # just the OCSP responses, from those certificates and the two responders
-sh tools/mkp3.sh       # vectors 34..58: the packages, their containers and the material directories
+sh tools/mklv.sh       # just the archival timestamps, over the CRLs and the response the LTV arms carry
+sh tools/mkp3.sh       # vectors 34..64: the packages, their containers and the material directories
 ```
 
 All of them run offline, open no port and need only `openssl` and `python3`. `tools/mkcrl.sh` writes
@@ -214,9 +244,17 @@ built with `openssl ocsp -index ... -reqin` so no responder is ever contacted, a
 re-signed** by the same responder key so their thisUpdate/nextUpdate are the same fixed dates the
 CRLs use. That last step is not decoration: `openssl ocsp` stamps a response with the build second and
 refuses a non-positive `-ndays`/`-nmin` (MEASURED on 3.5.3), so a shipped "expired response" is
-impossible without moving the window and re-signing it. `tools/mkasic.py` is the container builder, and its docstring
+impossible without moving the window and re-signing it. `tools/mklv.sh` writes the archival timestamps under `vectors/pki/ltv/` — one RFC 3161
+token over each CRL and over the OCSP response the long-term-validation vectors carry inside their
+containers — with `openssl ts -query`/`-reply` and no responder anywhere. Those tokens are **not**
+re-dated, unlike the OCSP responses, because an RFC 3161 token's genTime lives inside a CMS
+SignedAttributes structure `openssl ts` will not let a script move: what each arm asserts is therefore
+relative to the build second, and the fixture dates fix the direction of the inequality (a CRL whose
+`nextUpdate` is 2099 is inside its window at any build time; one whose `nextUpdate` is 2021 is outside
+it at any time after 2021). `tools/mkasic.py` is the container builder, and its docstring
 states the container shape it produces; `--embedded-content` builds the shape it does **not** produce
-(`-nodetach`), which is what vector 48 refuses.
+(`-nodetach`), which is what vector 48 refuses, and `--manifest-entry` is what carries the validation
+material into a container as sealed, manifest-covered `META-INF/ltv/` entries.
 
 ## The vectors, with expected and actual results
 
@@ -310,11 +348,42 @@ same thing, plus the requirement identifiers the case exercises.
 | 57b | `57` with one CRL added | the same directory, plus the CA that issued the sealer | **2** | **0** |
 | 58 | `58-revocation-dir-garbage` | a directory holding sufficient material and one file that is not revocation material | **2** | **3** |
 | 58b | `58` with the two real files as flags | the same material without the file that cannot be read | **2** | **0** |
+| 59 | `59-ltv-valid` | `ltv:true` and four carried entries: two CRLs and an archival timestamp over each, all inside their windows at the archival time | **1** | **0** |
+| 59b | `59` with `--trust-anchors` withheld | the archival time cannot be established, so the LTV question is undecided | n/a | **3** |
+| 60 | `60-ltv-absent` | `ltv:true` and the container carries no validation material at all | **1** | **1** |
+| 61 | `61-ltv-evidence-expired` | one carried CRL is out of its window at the archival time | **1** | **1** |
+| 62 | `62-ltv-missing-cert` | a carried OCSP response for the sealer and nothing for the intermediate | **1** | **1** |
+| 63 | `63-ltv-unclaimed-material` | the same material as 59 under `ltv:false`: a finding, exit unchanged | **1** | **0** |
+| 64 | `64-ltv-timestamp-unverified` | one byte flipped in a carried archival timestamp: it names its imprint and its signature does not verify | **1** | **1** |
+| 65 | `65-ltv-carried-revocation` | the CRL the container carries lists the sealer as revoked | **1** | **1** |
+
+Rows 59–65 are the long-term-validation vectors and they close the last item the P3 verifier had
+open: it reported LTV material as present or absent and never validated it. **59** is the arm that may
+pass — complete material, each value inside its window at the time its own archival timestamp
+establishes, each timestamp verified against the supplied anchors — and its report names every value it
+validated, the window it was checked against and the time it was checked at. **60** is `ltv:true` with
+an empty container; **61** carries a CRL whose window closed in 2021 under a timestamp stamped later,
+so the value was expired *at the archival time*; **62** carries an OCSP response for the sealer and
+nothing for the intermediate, so the refusal names the certificate left uncovered; **63** is 59's
+material under `ltv:false`, which is a finding and not a refusal; and **64** carries a token whose last
+byte was flipped, which still parses, still names its message imprint and no longer verifies; and
+**65** carries 49's revoked CRL inside the seal, so the package's own evidence refutes the seal it
+carries. The
+"before" column is **1** for all seven, and it means less here than it did for rows 49–58: pre-fix, any
+manifest-covered entry without a file on disk was refused as "the package holds no such file", so the
+old tool never read a carried value at all. What carries the proof is therefore the control in each
+`expected.txt` (the same material with the one defect removed) and the mutant table below, where each
+new rule is removed from the fixed tool and exactly one arm flips. Rows 59b, and the "no anchors"
+arms recorded in `59`'s and `61`'s `expected.txt`, pin the third outcome: with no anchor to verify
+against, the LTV question is **not decided** — a verifier that refused there would be calling good
+material bad because it was not given the means to check it. The definition those rows check is
+**MA-84**, the next free identifier: nothing was renumbered, and MA-1 … MA-83 are the same set as
+before.
 
 11b is the residual of §7.4.3 in one line: without the predecessor, a dropped record is invisible,
 and the validator says the layer was not armed rather than implying a pass.
 
-Rows 34–58 are the P3 vectors, and they are the first ones run against `validator/p3-verify` rather
+Rows 34–65 are the P3 vectors, and they are the first ones run against `validator/p3-verify` rather
 than `martelage-verify`. Each pair is built so that the two arms differ by exactly one thing — the
 container, the anchor directory, one flag, one key, one byte, one CRL entry — so the exit code is
 decided by the check under test and by nothing else. Row 35 is the one that shows what the profile
@@ -472,8 +541,20 @@ armed and every check passes. Measured on this tree:
 | the response's signer is verified and its chain required to reach an anchor | 56 | 3 | **0** | 0 |
 | a file in a `--revocation-dir` that parses as neither is reported | 58 | 3 | **0** | 0 |
 | the unarmed revocation state is printed as unarmed | 50 (unarmed) | names the unarmed state | **prints "checked CLEAN" with nothing checked (still exit 0)** | 0 |
+| a carried value is checked against its window AT THE ARCHIVAL TIME | 61 | 1 | **0** | 0 |
+| a certificate of the chain with no carried evidence is refused | 62 | 1 | **0** | 0 |
+| a carried archival timestamp's own signature is verified | 64 | 1 | **0** | 0 |
+| `ltv:true` with an empty container is refused | 60 | 1 | **0** | 0 |
+| `ltv:false` with material is a FINDING, not a refusal | 63 | 0 | **1** | 0 |
+| a carried value that states REVOKED refuses the container | 65 | 1 | **0** | 0 |
 
-The last row is the shape the previous review found broken for the signer set, and it is here on
+The LTV rows are measured against the same control: in every one of the five mutants vector 59 — the
+arm whose complete material satisfies the claim — still exits 0, so what moved is the check under test
+and not the harness. They are also why rows 59–64 are not witnessed by a pre/post comparison of the
+tool: the pre-fix tool refuses the carried entries before it reads any of them, so "before" says
+nothing about these five rules.
+
+The last row above the LTV block is the shape the previous review found broken for the signer set, and it is here on
 purpose: an **unarmed** check must never read as a pass, and the exit code cannot carry that — the
 mutant still exits 0 on vector 50's unarmed arm while printing "checked CLEAN" over material it never
 read. The two arms' `must print` lists are the instrument: on the armed arm "checked CLEAN …" is

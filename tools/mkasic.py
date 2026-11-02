@@ -50,6 +50,10 @@ MEDIA = {
 }
 
 
+def sha256_bytes(data):
+    return hashlib.sha256(data).hexdigest()
+
+
 def sha256_file(path):
     h = hashlib.sha256()
     with open(path, "rb") as fh:
@@ -83,13 +87,20 @@ def build_manifest(pkg, files, skip, extra=()):
         lines.append(' <manifest:file-entry manifest:full-path="%s" manifest:media-type="%s">' % (rel, media))
         lines.append('  <manifest:digest manifest:digest-algorithm="sha256">%s</manifest:digest>' % digest)
         lines.append(' </manifest:file-entry>')
-    for full, digest, _path in extra:
+    for full, digest in extra:
         lines.append(' <manifest:file-entry manifest:full-path="%s" manifest:media-type="application/octet-stream">'
                      % full)
         lines.append('  <manifest:digest manifest:digest-algorithm="sha256">%s</manifest:digest>' % digest)
         lines.append(' </manifest:file-entry>')
     lines.append('</manifest:manifest>')
     return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def corrupt(data):
+    """one byte at the very end: a DER structure still parses and only the octet
+    string it ends with is damaged — which is how a token that names its message
+    imprint correctly can still fail its own signature check"""
+    return data[:-1] + bytes([data[-1] ^ 0x01])
 
 
 def add(zf, name, data, stored=False):
@@ -122,6 +133,10 @@ def main(argv=None):
     ap.add_argument("--manifest-entry", action="append", default=[], metavar="PATH=FILE",
                     help="an extra ASiC manifest file-entry for PATH, with the digest of FILE, and a ZIP entry of "
                          "that name carrying FILE's bytes. PATH is used verbatim: no normalisation")
+    ap.add_argument("--corrupt-entry", action="append", default=[], metavar="NAME",
+                    help="flip ONE byte near the end of the ZIP entry NAME as it is written, leaving the file on "
+                         "disk untouched. Used for the arm whose carried archival timestamp does not verify: the "
+                         "token still parses and still names its message imprint, and only its signature is broken")
     ap.add_argument("--shadow-entry", action="append", default=[], metavar="NAME=FILE",
                     help="write a ZIP entry named NAME carrying FILE's bytes BEFORE the package files, so the "
                          "container holds two entries of that name with different bytes")
@@ -155,11 +170,16 @@ def main(argv=None):
         sys.stderr.write("mkasic.py: %s holds no files\n" % pkg)
         return 2
     skip = set(args.uncovered_entry and [args.uncovered_entry] or [])
+    corrupt_names = set(args.corrupt_entry)
     extra_entries = []
     for item in args.manifest_entry:
         full, path = item.split("=", 1)
-        extra_entries.append((full, sha256_file(path), path))
-    manifest = build_manifest(pkg, files, skip, extra_entries)
+        with open(path, "rb") as fh:
+            data = fh.read()
+        if full in corrupt_names:
+            data = corrupt(data)
+        extra_entries.append((full, sha256_bytes(data), data))
+    manifest = build_manifest(pkg, files, skip, [(full, digest) for full, digest, _data in extra_entries])
     manifest_path = os.path.join(work, "manifest.xml")
     with open(manifest_path, "wb") as fh:
         fh.write(manifest)
@@ -217,9 +237,8 @@ def main(argv=None):
         for name, path in shadows:
             with open(path, "rb") as fh:
                 add(zf, name, fh.read())
-        for full, _digest, path in extra_entries:
-            with open(path, "rb") as fh:
-                add(zf, full, fh.read())
+        for full, _digest, data in extra_entries:
+            add(zf, full, data)
         for rel in files:
             if rel in drop:
                 continue

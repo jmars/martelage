@@ -1,0 +1,36 @@
+vector: 62-ltv-missing-cert
+what:   the claim states "ltv":true and the container carries an OCSP response
+        that reports the SEALER good, with an archival timestamp over it — and
+        nothing at all that speaks for the intermediate A certificate the chain
+        passes through. §9.3.1 MA-84 requires evidence for EVERY certificate of the
+        established chain, so the material covers part of the chain and the refusal
+        names the certificate it does not cover. This is also the arm that exercises
+        the carried OCSP path rather than the carried CRL path: the response's own
+        signature is verified under a signer the certificate's issuer authorised,
+        and its single response is read for a window
+run:    validator/p3-verify --container vectors/62-ltv-missing-cert/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/62-ltv-missing-cert/pkg
+exit:   1
+also:   validator/p3-verify --container vectors/59-ltv-valid/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem vectors/59-ltv-valid/pkg   ->  exit 0
+        the CONTROL: the same claim, the same construction and a chain of the same
+        shape, where the material does speak for every certificate in it. What
+        decides 1 against 0 is whether a certificate of the chain is left with no
+        carried value, and nothing else
+must print:
+  - "NO revocation evidence carried for this certificate"
+  - "the chain certificate CN=martelage test intermediate A"
+  - "OCSP good"
+  - "inside that window at the archival time"
+requirements exercised: MA-64, MA-70, MA-84
+why it fails without the fix: MEASURED. Against the pre-fix tool this vector exits
+        1 as well, but the pre-fix run refuses the carried entries as "the package
+        holds no such file" before it reads any of them, so it never asked which
+        certificate was left uncovered — the pre/post comparison is empty here and
+        is NOT the evidence. The evidence is the mutant probe in
+        handoff-martelage-ltv-result: with the chain-coverage rule removed from the
+        post-fix tool, this vector and only this vector flips 1 -> 0, while 59 stays
+        0. The control above is the other half.

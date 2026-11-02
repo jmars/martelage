@@ -1,0 +1,39 @@
+vector: 64-ltv-timestamp-unverified
+what:   the same complete material as 59, with ONE byte flipped inside the archival
+        timestamp that covers the intermediate's CRL — the byte is flipped as the
+        ZIP entry is written and in the manifest digest that covers it, so the seal
+        is intact, the token still parses and still states the message imprint of
+        the CRL it is about, and only its own signature is broken. §9.3.1 MA-84
+        requires the archival timestamp's own signature to verify and its chain to
+        reach a supplied anchor; a timestamp whose signature does not verify
+        establishes no time, and the refusal names the timestamp and openssl's own
+        word for why. The window of the value it covers is NOT then checked against
+        a time that does not exist — the report says the archival time could not be
+        established, so the refusal is about the timestamp and about nothing else
+run:    validator/p3-verify --container vectors/64-ltv-timestamp-unverified/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/64-ltv-timestamp-unverified/pkg
+exit:   1
+also:   validator/p3-verify --container vectors/59-ltv-valid/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem vectors/59-ltv-valid/pkg   ->  exit 0
+        the CONTROL: the same material with that one byte not flipped. The four
+        carried entries are byte-identical apart from it, and the seal covers the
+        corrupted copy — so what decides 1 against 0 is the token's own signature
+        and nothing else
+must print:
+  - "its archival timestamp does not verify"
+  - "META-INF/ltv/crl-rootA-clean.pem.tst (openssl: provider signature failure)"
+  - "its archival time could not be established, so its window is NOT checked"
+  - "p3.7     long-term validation REFUSED — the carried LTV material does not support the claim"
+requirements exercised: MA-64, MA-70, MA-84
+why it fails without the fix: MEASURED. Against the pre-fix tool this vector exits
+        1 as well, and again for the wrong reason — the pre-fix run refuses every
+        carried entry as "the package holds no such file" and never verifies a
+        timestamp at all, so the pre/post comparison is empty here and is NOT the
+        evidence. The evidence is the mutant probe in handoff-martelage-ltv-result:
+        with the token-verification arm removed from the post-fix tool, this vector
+        and only this vector flips 1 -> 0, while 59 stays 0. Note the shape the arm
+        guards against: a verifier that read the imprint and skipped the signature
+        would report this container as carrying valid, correctly timed material.

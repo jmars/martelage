@@ -1,0 +1,39 @@
+vector: 60-ltv-absent
+what:   the claim states "ltv":true and the container carries NO validation
+        material at all: the same package, the same construction and the same
+        signer as 34, with ONE claim field different. §9.3.1 MA-84 makes
+        "ltv":true an assertion that the container carries, for every certificate
+        of the established chain, revocation evidence and an archival timestamp
+        over it; a container carrying none is refused, and the refusal names the
+        claim as the thing the evidence contradicts
+run:    validator/p3-verify --container vectors/60-ltv-absent/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/60-ltv-absent/pkg
+exit:   1
+also:   validator/p3-verify --container vectors/34-seal-verified/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem vectors/34-seal-verified/pkg   ->  exit 0
+        the CONTROL: byte-identical construction and claim except ltv=false, which
+        asserts nothing and is therefore not contradicted. One claim field decides
+        the exit code
+        validator/p3-verify --container vectors/59-ltv-valid/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem vectors/59-ltv-valid/pkg   ->  exit 0
+        the CONTROL in the other direction: that claim with carried material that
+        satisfies it
+must print:
+  - "carries no long-term validation material at all"
+  - "the evidence contradicts the claim it was supposed to carry"
+  - "p3.7     long-term validation REFUSED — ltv=true with no carried material"
+requirements exercised: MA-64, MA-70, MA-84
+why it fails without the fix: this vector's refusal already existed (the pre-fix
+        tool refused ltv=true with no material), so the asymmetry here is 1 against
+        1 and it is NOT the evidence that the new work decides anything. What the
+        fix changes is the reason: the pre-fix text was "the evidence contradicts
+        the claim (§9.3 MA-64)" with no statement of what the claim asserts; the
+        text now states the assertion MA-84 defines — revocation evidence and an
+        archival timestamp for every certificate of the established chain. The arm
+        that isolates the new rule is the mutant probe recorded in
+        handoff-martelage-ltv-result: with the no-material refusal removed, this
+        vector and only this vector flips 1 -> 0.

@@ -6,7 +6,7 @@ is, what it proves, what it does not, and how to use it.
 | file | what it is |
 |---|---|
 | `index.html` | the purpose: what a package is, why the standard exists, the residual it prints, the five mechanisms, what it is not, the name, status |
-| `usage.html` | the usage: verifying, verifying without tooling, producing, chain and anchor, the anchor profiles (P1/P2 and the EU qualified seal), the limits, where the evidence lives |
+| `usage.html` | the usage: verifying, verifying without tooling, producing, chain and anchor, the anchor profiles (P1/P2 and the EU qualified seal), long-term validation and the four outcomes it can reach (§9.3.1 MA-84), the limits, where the evidence lives |
 | `site.css` | the stylesheet: the design pass applied — tokens, type scale, layout, dark scheme, print |
 | `martelage.typ` | the typeset document, **generated** from the two HTML pages by `../tools/html2typst.py` |
 | `martelage-0.2.pdf` | the print artifact, compiled from `martelage.typ` by Typst |
