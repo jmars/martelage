@@ -6,7 +6,7 @@ is, what it proves, what it does not, and how to use it.
 | file | what it is |
 |---|---|
 | `index.html` | the purpose: what a package is, why the standard exists, the residual it prints, the five mechanisms, what it is not, the name, status |
-| `usage.html` | the usage: verifying, verifying without tooling, producing, chain and anchor, the anchor profiles (P1/P2 and the EU qualified seal), long-term validation and the four outcomes it can reach (§9.3.1 MA-84), the limits, where the evidence lives |
+| `usage.html` | the usage: verifying, verifying without tooling, producing, chain and anchor, the anchor profiles (P1/P2 and the EU qualified seal) including the revocation fetcher that may obtain the material (`§9.3.2` MA-85), long-term validation and the four outcomes it can reach (§9.3.1 MA-84), the limits, where the evidence lives |
 | `site.css` | the stylesheet: the design pass applied — tokens, type scale, layout, dark scheme, print |
 | `martelage.typ` | the typeset document, **generated** from the two HTML pages by `../tools/html2typst.py` |
 | `martelage-0.2.pdf` | the print artifact, compiled from `martelage.typ` by Typst |
@@ -89,15 +89,16 @@ like any other code. Two builds of the same source are byte-identical: `SOURCE_D
 pinned in the `Makefile`, so the PDF carries a constant creation date instead of the build second.
 
 **One orientation.** Every page is A4 portrait: the artifact contains no rotated sheet, no landscape
-insert, and no block that moves to a wider one. MEASURED on the built PDF — 18 pages, 18 `/MediaBox`
+insert, and no block that moves to a wider one. MEASURED on the built PDF — 19 pages, 19 `/MediaBox`
 entries, **one distinct value** (`0 0 595.2756 841.8898`), and no `/Rotate` on any page, with
-`/Count 18` on the page tree. That is 18 pages against the landscape build's 16 and the
-portrait-with-flipped-inserts build's 22: the flip cost six pages over landscape because each insert
-broke the page before and after it, and putting code back into the portrait column gives those pages
-back. The count has only ever moved with content, never with geometry: 12 pages before the anchor
-profiles section of `usage.html` was written out, 15 when the P3 verifier was built, and 18 now that
-the revocation inputs (`--ocsp-response`, `--revocation-dir`) and the document-version record (§11.7)
-are written out — the page size, the measure and the code sizes are unchanged, and the whole footer
+`/Count 19` on the page tree. That is 19 pages against the landscape build's 16 and the
+portrait-with-flipped-inserts build's 22: the flip cost that build six pages over landscape because
+each insert broke the page before and after it, and putting code back into the portrait column gives
+those pages back. The count has only ever moved with content, never with geometry: 12 pages before
+the anchor profiles section of `usage.html` was written out, 15 when the P3 verifier was built, 18
+when the revocation inputs (`--ocsp-response`, `--revocation-dir`) and the document-version record
+(§11.7) were written out, and 19 now that the revocation fetcher (§9.3.2) is written out beside them
+— the page size, the measure and the code sizes are unchanged, and the whole footer
 block on every page still reads `MARTELAGE-0.2 — draft 0.2`. The browser print path is a
 different path, and is stated plainly rather than matched: `@media print` in `site.css` still asks for
 `size: landscape` and `white-space: pre-wrap`, so printing the HTML from a browser gives a landscape

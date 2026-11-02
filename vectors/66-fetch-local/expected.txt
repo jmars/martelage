@@ -1,0 +1,185 @@
+vector: 66-fetch-local
+what:   THE FETCHER AND THE PAIR. Every other vector hands validator/p3-verify material
+        that already sits on disk; this one covers how the material may come to sit
+        there: tools/p3-fetch, the transport tool the standard added beside the
+        verifier (§9.3.2, MA-85). The rig (tools/revmirror.py) is loopback test
+        tooling — it binds 127.0.0.1:18437 and nothing else — and this vector starts
+        it, fetches from it, feeds what was fetched to the REAL verifier, and stops
+        the rig. Thirteen arms, each with its exit code and its must-print lines:
+        the fetch itself (AIA/CDP extraction, a live nonce-matched OCSP answer, two
+        CRLs), the pair (the fetched directory verified, exit 0 CONFORMANT), the LTV
+        boundary (the same fetched material cannot satisfy ltv:true), and the
+        refusals: delta CRL, responder error statuses named, file:// redirect,
+        redirect cap, size cap, untrusted TLS. A test that cannot fail is not a
+        test: the driver checks every exit code AND every literal below, and exits
+        nonzero if any arm misses one
+run:    sh vectors/66-fetch-local/run.sh
+exit:   0
+also:   each arm, alone. The driver prints every command verbatim as it runs it;
+        the three rig commands it starts are:
+        python3 tools/revmirror.py --ocsp --trylater /trylater \
+          --map /err6=vectors/66-fetch-local/responder-error-unauthorized.der \
+          --redirect /tofile=file:///etc/hostname \
+          --redirect /loop=http://127.0.0.1:18437/loop --fill /big=25000000
+        python3 tools/revmirror.py --https vectors/pki/mirror.crt.pem vectors/pki/mirror.key.pem
+        python3 tools/revmirror.py --https vectors/pki/mirror-bad.crt.pem vectors/pki/mirror-bad.key.pem
+        and a single fetch arm by hand (rig 1 running) looks like:
+        tools/p3-fetch --out DIR --url http://127.0.0.1:18437/trylater   ->  exit 2
+        THE PAIR, by hand, from the three fetches the driver makes into one
+        directory (the first two from signerA-fetch's own AIA and CRLDP, the third
+        by explicit URL because rootA is the anchor and nothing in the chain names
+        a URL for it):
+        tools/p3-fetch --out DIR --kind ocsp --cert vectors/pki/signerA-fetch.crt.pem \
+          --issuer vectors/pki/intermediateA.crt.pem                     ->  exit 0
+        tools/p3-fetch --out DIR --kind crl --cert vectors/pki/signerA-fetch.crt.pem
+                                                                         ->  exit 0
+        tools/p3-fetch --out DIR --url http://127.0.0.1:18437/crl-rootA-clean.pem \
+          --kind crl                                                     ->  exit 0
+        validator/p3-verify --container vectors/58-revocation-dir-garbage/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          --revocation-dir DIR vectors/58-revocation-dir-garbage/pkg     ->  exit 0
+        vector 58's container is reused deliberately: it is the revocation-dir
+        vector, its chain is signerA <- intermediateA <- rootA, and it carries
+        ltv:false — so the only new thing this run measures is the material's origin
+        (fetched, not handed over)
+
+the arm table (what the driver checks, arm by arm):
+  1a  fetch OCSP from the AIA, live responder      exit 0
+      "asked: 1 item(s)" / "POST 200 http://127.0.0.1:18437/ocsp" /
+      "nonce: matched" / "wrote DIR/ocsp-0A11-" / "exit: 0"
+      the nonce the fetcher sent comes back in the response (the rig answers with
+      tools/mkocsp.sh's exact invocation), and the response's own bytes are
+      written under a name carrying their sha256 — as received, no re-encoding
+  1b  fetch CRL from the CRLDP                     exit 0
+      "GET 200 http://127.0.0.1:18437/crl" / "parsed CRL (PEM)" / "wrote DIR/crl-
+      martelage-test-intermediate-A-" / "exit: 0"
+  1c  fetch rootA's CRL by explicit URL            exit 0
+      "wrote DIR/crl-martelage-test-root-A-" / "exit: 0"
+      after 1a–1c the directory holds exactly three files, every one handable to
+      --revocation-dir; each fetch also wrote DIR.fetch.json BESIDE the directory
+      (never inside — vector 58), each run's record replacing the last, so the
+      record on disk after 1c is run 1c's; the driver keeps a copy of each run's
+      record so all three are readable
+  2   THE PAIR: the fetched directory verified     exit 0
+      "read from disk, offline: nothing is fetched" / "usable CRL (PEM)" /
+      "usable OCSP response (DER)" / "checked and clean, from" /
+      "checked CLEAN" / "verdict      CONFORMANT"
+      the handoff arm. The verifier names every fetched file, re-makes EVERY check
+      it makes on handed material — signature, window, entry list, CertID match,
+      chain to an anchor — and its own report says the material is "read from
+      disk, offline: nothing is fetched". MA-85 says what the fetch added: bytes
+      and a provenance record, and no confidence beyond what the verifier's own
+      checks return. The verdict is the verifier's, reached with no network path
+  2b  fetched material is never LTV (MA-84)        exit 1
+      vector 60's invocation (ltv:true, nothing carried) with ONE addition: the
+      SAME fetched directory as --revocation-dir
+      "p3.7     long-term validation REFUSED — ltv=true with no carried material"
+      / "the evidence contradicts the claim it was supposed to carry" /
+      "verdict      NON-CONFORMANT"
+      the revocation layer reads the fetched material as usable and checked CLEAN,
+      and the run is STILL refused: an ltv:true claim asserts evidence the
+      container carries inside the seal, and no directory of fetched bytes can
+      carry it. Transport-perfect material satisfies no archival claim
+  3   a delta CRL is refused, never written        exit 2
+      "REFUSED: it is a DELTA CRL (X509v3 Delta CRL Indicator present)" /
+      0 files in DIR
+      the verifier has no delta-CRL handling; writing one would be manufacturing
+      a false 'clean' (the fixture is vectors/pki/crl-intermediateA-delta.pem)
+  4   a responder error status is refused BY NAME  exit 2   (PART A of this slice)
+      "REFUSED: the responder answered 'trylater (3)'" / 0 files
+      openssl reads the rig's 5-byte response (30 03 0A 01 03) and prints
+      "Responder Error: trylater (3)" on stdout with no status line; the refusal
+      names the responder's answer instead of claiming the body does not parse.
+      4b proves it is the class, not one hardcoded string: the same refusal for
+      status 6 — "REFUSED: the responder answered 'unauthorized (6)'" — from
+      responder-error-unauthorized.der in this directory, six bytes
+      (30 03 0A 01 06: an OCSPResponse whose responseStatus is unauthorized,
+      RFC 6960), served by --map. internalError is the same code path
+      (openssl prints "Responder Error: internalerror (2)"); it has no arm of
+      its own because the third byte is the only thing that differs
+  5a  a file:// redirect is refused by name        exit 2
+      "REFUSED: refusing scheme 'file' — only http and https are fetched" / 0 files
+      the rig answers 302 with Location: file:///etc/hostname; a redirect is
+      where a fetcher must re-apply its scheme allowlist, not trust the first hop
+  5b  the redirect cap                             exit 2
+      "REFUSED: redirect cap (--redirects 3) exceeded" / 0 files
+      the rig's /loop answers itself; the fetcher records four 302 hops and stops
+  6   --max-bytes fires before anything is written exit 2
+      "REFUSED: the response body exceeded --max-bytes (20971520): aborted before
+      anything was written" / 0 files
+      the rig answers 200 with a truthful 25,000,000-byte Content-Length and the
+      body to match; the cap aborts the read, so nothing reaches the disk
+  7a  TLS, trusted rig certificate                 exit 0
+      the rig speaks TLS with vectors/pki/mirror.crt.pem (issued by rootA, SAN
+      IP:127.0.0.1); --tls-ca-dir vectors/pki/anchors trusts it
+      "tls peer: sha256 " / "exit: 0", and the provenance record carries
+      requests[0].tls.peer_cert_sha256 (the driver checks the record too)
+  7b  TLS, untrusted rig certificate               exit 2
+      the same rig under rootB (vectors/pki/mirror-bad.crt.pem), same anchors
+      "REFUSED: TLS peer certificate is not trusted under vectors/pki/anchors" /
+      0 files — TLS transport that verifies is accepted, TLS that does not is
+      refused before a byte of body is read; both arms run in the suite (not as
+      a manual probe) because the rig serves HTTPS from the same one-command form
+
+how the rig is handled (and how the suite behaves around it):
+  run.sh starts its own rig, so the suite needs no rig running beforehand: point
+  the gate at an idle machine and vector 66 brings its own transport up and takes
+  it down. It refuses to start if 18437 is ALREADY listening — a rig left running
+  is a fault, not a convenience, and a second suite run must not fetch from a rig
+  it did not start — so the failure mode of a leftover rig is a named refusal, not
+  a green run against the wrong process. Every rig also carries --exit-after 300
+  as a backstop, is stopped by the script between TLS configurations, and the
+  script asserts the port free again before it reports success: no process is
+  left behind. The other sixty-five vectors never open a socket, so a rig left
+  up or down changes nothing for them
+
+must print:
+  - "nonce: matched"
+  - "read from disk, offline: nothing is fetched"
+  - "usable CRL (PEM)"
+  - "usable OCSP response (DER)"
+  - "checked and clean, from"
+  - "checked CLEAN"
+  - "verdict      CONFORMANT"
+  - "p3.7     long-term validation REFUSED — ltv=true with no carried material"
+  - "verdict      NON-CONFORMANT"
+  - "REFUSED: it is a DELTA CRL (X509v3 Delta CRL Indicator present)"
+  - "REFUSED: the responder answered 'trylater (3)'"
+  - "REFUSED: the responder answered 'unauthorized (6)'"
+  - "REFUSED: refusing scheme 'file' — only http and https are fetched"
+  - "REFUSED: redirect cap (--redirects 3) exceeded"
+  - "REFUSED: the response body exceeded --max-bytes (20971520): aborted before anything was written"
+  - "REFUSED: TLS peer certificate is not trusted under vectors/pki/anchors"
+  - "ok: port 18437 is free — no rig was left behind"
+requirements exercised: MA-85, MA-84
+why it fails without the fix: MEASURED, twice over. (1) The pre-fix fetcher named
+        a responder error status "it does not parse as an OCSP response (openssl
+        printed no response status)" — the decision and the exit code were right
+        (refuse, nothing written), the words were false: openssl HAD parsed the
+        response and printed "Responder Error: trylater (3)" on stdout, where the
+        old refusal only ever read stderr. A report that says "does not parse"
+        about bytes that parsed is the exact failure this repository's tools exist
+        to avoid — the operator is sent to debug the wrong layer (the bytes)
+        instead of the responder. The fix reads stdout for the responder's own
+        error line and quotes it: arms 4 and 4b name the status, exit codes
+        unchanged. (2) Arms 1–2 are the pair the standard added MA-85 for: a
+        fetch tool that reported a verdict, or a verifier that fetched, would make
+        this run read as "checked, therefore true" — the vector pins the honest
+        shape, a fetcher that reports transport only and a verifier that re-makes
+        every check on fetched bytes (arm 2's own report line says so), and arm
+        2b pins that no amount of fetched material satisfies ltv:true
+what this vector does NOT claim: that the rig is an honest responder (it is a
+        test double; its live arm shells out to mkocsp.sh's invocation, and the
+        nonce it echoes proves only that the response corresponds to the request
+        SENT — the nonce's honesty ends there, and the fetcher says so in every
+        run's NOT ESTABLISHED block); that the fetched material is fresh (its
+        window is what the material states, and the verifier checks the window it
+        states — nothing more was claimed); that a sha256-named file proves
+        anything about who answered (the name binds the bytes, never the peer);
+        that localhost here stands for the internet: the rig is loopback-only by
+        design, DNS, IPv6, proxies and real CA ecosystems are outside every
+        vector here, and the network is the limit; and that the provenance
+        record's presence in DIR.fetch.json makes the fetch auditable by the
+        verifier — the verifier never reads it (it would make --revocation-dir
+        undecidable, vector 58); the record is for the human who ran the fetch

@@ -1,15 +1,17 @@
 # Martelage — the Evidence Package standard
 
-**Status: draft 0.2.** This repository holds the standard, its reference validators, and the test
+**Status: draft 0.3.** This repository holds the standard, its reference validators, and the test
 vectors that prove the validators can fail. Nothing here is committed to a registry, published by a
 standards body, or certified by anyone.
 
-The document version is `martelage 0.2` and the wire version is still `"v":1`, so a package written
-for the previous draft is a `0.2` package: nothing in the format moved. What moved is the verifier
-surface, and §11.7 records it — including that the bump was published one commit late, inside the
-`v0.2.0` tag message rather than in the text it names. The text keeps its filename,
+The document version is `martelage 0.3` and the wire version is still `"v":1`, so a package written
+for the previous draft is a `v:1` package: nothing in the format moved. What moved between `0.2` and
+`0.3` is the fetch surface — §9.3.2, a class of tool beside the verifier, and **MA-85** — and §11.8
+records it. What moved between `0.1` and `0.2` was the verifier surface, and §11.7 records that —
+including that the bump was published one commit late, inside the `v0.2.0` tag message rather than in
+the text it names. The text keeps its filename,
 `spec/MARTELAGE-0.1.md`, because a draft's filename is a path that every link and every staging step
-resolves and its identifier is the version: §11.7 and the file's own header say so.
+resolves and its identifier is the version: §11.7, §11.8 and the file's own header say so.
 
 **The site:** `site/` — the explanatory pages — deploys to GitHub Pages at
 <https://jmars.github.io/martelage/> via [`.github/workflows/pages.yml`](.github/workflows/pages.yml)
@@ -31,11 +33,12 @@ reader cannot credit the weakest layer with the strength of the strongest.
 
 | file | what it is |
 |---|---|
-| `spec/MARTELAGE-0.1.md` | the standard. Every normative requirement carries an identifier (`MA-1` … `MA-83`) so a conformance report can cite it. |
+| `spec/MARTELAGE-0.1.md` | the standard. Every normative requirement carries an identifier (`MA-1` … `MA-85`) so a conformance report can cite it. |
 | `validator/martelage-verify` | the reference validator: POSIX shell + the set §10.1 names (`awk`, `sed`, `grep`, `cmp`, `sort`, `sha256sum`, `tr`, `cut`, `head`, `tail`, `wc`, `find`, `mktemp`, `rm`, `cat`). No network, no interpreter beyond those, no keys, no service, no producer. |
 | `validator/p3-verify` | the P3 profile verifier (§9.3 `p3-eidas-qualified-seal-asic-e`): python3 and the `openssl` binary, no third-party library and no network path. Verifies an ASiC-E container's CAdES seal (the detached manifest-signature construction, checked as the construction before anything else is accused), **every signer of every signature entry** and the whole chain each one reaches, the digests it covers, an RFC 3161 token with the TSA's own chain, revocation **only against material you hand it** (`--revocation`, `--ocsp-response`, `--revocation-dir`), and **long-term validation of the material a container carries** (§9.3.1 MA-84) — and prints what it cannot check on every run. A second implementation: `martelage-verify` keeps its zero-dependency property untouched. |
-| `tools/` | `mkpki.sh` (the throwaway test PKI), `mkcrl.sh` (the CRLs the revocation vectors hand the verifier), `mkocsp.sh` (the OCSP responses they hand it), `mklv.sh` (the archival timestamps the long-term-validation vectors carry, built with `openssl ts`), `mkasic.py` (the ASiC-E container builder), `mkp3.sh` (rebuilds the P3 vectors), and the two scripts that render the site's print artifact. |
-| `vectors/` | fifty-eight hand-made packages and their fixtures, with their expected results. Constructed for the standard; none is exported from a producer system. |
+| `tools/p3-fetch` | the revocation **fetcher** (§9.3.2, MA-85): python3 stdlib (`http.client`, `ssl`, `json`) and the `openssl` binary for every cryptographic byte — no third-party library. It is **not a validator**: it fetches CRLs and OCSP responses into a directory `--revocation-dir` accepts, writes a provenance record beside it, decides nothing, and reports no verdict. See [The revocation fetcher](#the-revocation-fetcher) below. |
+| `tools/` | `mkpki.sh` (the throwaway test PKI), `mkcrl.sh` (the CRLs the revocation vectors hand the verifier), `mkocsp.sh` (the OCSP responses they hand it), `mklv.sh` (the archival timestamps the long-term-validation vectors carry, built with `openssl ts`), `mkasic.py` (the ASiC-E container builder), `mkp3.sh` (rebuilds the P3 vectors), `revmirror.py` (the loopback-only test rig vector 66 fetches from — it binds `127.0.0.1:18437` and nothing else), and the two scripts that render the site's print artifact. |
+| `vectors/` | the hand-made vectors `01`–`66` and their fixtures, with their expected results. Constructed for the standard; none is exported from a producer system. |
 | `LICENSE` | the licence split: specification text CC BY 4.0, code Apache-2.0. |
 
 The standard is published on its own. It defines concepts — a record envelope, a stream, a package
@@ -256,6 +259,93 @@ states the container shape it produces; `--embedded-content` builds the shape it
 (`-nodetach`), which is what vector 48 refuses, and `--manifest-entry` is what carries the validation
 material into a container as sealed, manifest-covered `META-INF/ltv/` entries.
 
+## The revocation fetcher
+
+[`tools/p3-fetch`](tools/p3-fetch) is the tool §9.3.2 (**MA-85**) added beside the verifier: given a
+certificate it reads the OCSP URL out of the certificate's AIA and the CRL URLs out of its CRL
+distribution points (or takes explicit `--url`s), fetches the material over `http`/`https`, and
+writes it into a directory `--revocation-dir` accepts unchanged — CRLs and OCSP responses under
+names carrying the sha256 of the exact bytes received, a provenance record (`DIR.fetch.json`: every
+hop, the TLS peer's certificate hash, whether the nonce it sent came back, the sha256, the retrieval
+time) written **beside** the directory, never inside it, because vector 58's verifier refuses a run
+whose material directory holds a file it cannot parse. Bytes are written exactly as received: no
+re-encoding, no normalisation, so the hash in the name is the hash of what is on disk and of what
+answered.
+
+**What a fetch establishes, and what it never claims.** A fetch is *transport, not trust* (MA-85).
+What it establishes is where bytes came from; it adds nothing to what they mean. Every run prints a
+NOT ESTABLISHED block naming exactly four things a fetch does not establish: **freshness** (that the
+material is current now, or was at any time other than the window the material itself states);
+**responder honesty** (that whoever answered holds the key the material is signed under);
+**CA-to-URL ownership** (that the party answering the URL is the CA that named it); and **any status
+outside the window the material itself states**. The tool is **not a validator**: it decides nothing
+about any package, reports no conformance verdict, and its exit codes are transport codes (0 fetched;
+1 fetched and something states revoked — a read fact, never a verdict; 2 nothing usable fetched;
+3 partial) and not §10.3's. The verifier does not become the fetcher's rubber stamp either: handed
+the fetched directory it re-makes every check it makes on material handed to it by any other means —
+signature, window, entry list, CertID match, chain — and vector 66's pair arm shows its own report
+saying so ("read from disk, offline: nothing is fetched"). One boundary is absolute: fetched material
+**cannot satisfy an `ltv:true` claim** (§9.3.1, MA-84) — that claim asserts evidence the container
+carries inside the seal, and vector 66's arm 2b refuses the same container with a fully usable
+fetched directory as it refuses it with none.
+
+**The verifiers stay offline, and that is checkable.** `validator/p3-verify` and
+`validator/martelage-verify` are byte-identical to the tagged release and have no network path; the
+property is a property of the directory, and the two one-line gates are:
+
+```sh
+rg -n 'urllib|http\.client|socket|requests' validator/
+# -> exactly 1 hit: validator/p3-verify:2598 — the English word "requests" in the
+#    tool's own no-network sentence ("never requests an OCSP response"). Prose, not an import.
+rg -n '^\s*(import|from)\s+(urllib|http|socket|requests|ssl)' validator/
+# -> no matches
+cmp validator/p3-verify <(git show v0.2.2:validator/p3-verify)
+# -> identical (v0.2.2 is the tag that carries today's p3-verify; martelage-verify still matches
+#    v0.2.0)
+```
+
+**The vector.** Vector [`66-fetch-local`](vectors/66-fetch-local/expected.txt) covers the fetcher and
+the pair: thirteen arms driven by one command (`sh vectors/66-fetch-local/run.sh`) against
+[`tools/revmirror.py`](tools/revmirror.py), a rig that binds `127.0.0.1:18437` and **nothing else** —
+a bind to any other address is refused before the socket exists, because a rig on `0.0.0.0` is a
+network service and this repo's test tooling is not. The vector starts its own rig (three of them:
+plain HTTP with every adversarial arm mounted, then TLS with the anchor-trusted certificate, then TLS
+with the untrusted one), runs the arms, stops each rig, and asserts the port free before it reports
+success — no process left behind. It refuses to start if the port is already listening: a second
+suite run must not fetch from a rig it did not start. The nonce-matched OCSP arm is live: the rig's
+responder shells out to `mkocsp.sh`'s exact invocation, so the answer echoes the request's nonce
+(MEASURED — openssl's responder copies the nonce unless told not to), and the nonce match proves only
+that the answer corresponds to the request this tool sent; its honesty ends there, which is exactly
+what the NOT ESTABLISHED block says.
+
+**The fetcher's checks have mutants too.** Same method: copy `tools/p3-fetch`, remove exactly the
+check under test, run the arm built for it, and confirm the control — the fetch-and-verify pair —
+stays green on the mutant. Measured on this tree:
+
+| check removed from a copy of `p3-fetch` | arm of 66 | fixed | mutant | control (pair) |
+|---|---|---|---|---|
+| the delta-CRL refusal ("it is a DELTA CRL") | 3 | 2, nothing written | **0 — the delta is written, and the verifier then reads it as "usable CRL (PEM)" and reports "checked CLEAN", exit 0: the false clean the refusal exists to prevent** | 0 |
+| the scheme allowlist ("refusing scheme …") | 5a | 2, "refusing scheme 'file' — only http and https are fetched" | **still exit 2, but by the wrong sentence ("URL has no host"); and a scheme that carries a host is FOLLOWED: `ftp://…` is fetched and written, exit 0 — the allowlist is what stands between a URL scheme and a silent HTTP fallback** | 0 |
+| the redirect cap ("redirect cap … exceeded") | 5b | 2, names the cap at 4 hops | **2 — but "unreachable: the hop loop returns or raises on every path": the loop bound still stops the following, so the mutant fails closed; what the removed raise carried was the name of the policy** | 0 |
+| the byte cap ("exceeded --max-bytes") | 6 | 2, aborts at 20 MiB and names the policy | **2, and nothing is written — the read runs to 20 MiB+1 and the completeness check refuses it as "connection closed after 20971521 of the 25000000 bytes": a second check doing an adjacent job. What the removal costs is the early abort and the sentence that names the real reason** | 0 |
+| the OCSP nonce (request built, minus its nonce) | 1a | 0, "nonce: matched" | **0, "nonce: none sent" — the run reads exactly as successful with the replay guard silently gone, and the pair still verifies 0: the nonce was never for the verifier, it was for the fetch's own record** | 0 |
+| the peer-certificate recording (sha256, subject) | 7a | 0, "tls peer: sha256 25d7534b…, subject commonName=… " | **0, "tls peer: sha256 None, subject ?" and the record's fields null — a fetch byte-for-byte as successful with the peer it talked to unnamed** | 0 |
+
+Two of the six mutants fail **closed** — the redirect cap and the byte cap survive their own removal
+because a second check (the loop bound, the length-completeness test) refuses the run, though the
+refusal no longer names the policy. That is the table telling the truth about redundancy: the cap
+raises exist to say WHY, and the second checks exist so that removing the sentence cannot become
+silently writing the body. The delta-CRL row is the one that matters most: it is a copy in which the
+fetcher hands the verifier a delta CRL as if it were a full one, and the pair reports CONFORMANT over
+a chain whose revocation statement was never made.
+
+**What is not covered.** Real responders and real CA ecosystems (nothing here is trusted by anyone —
+the PKI is throwaway by design), DNS resolution and public-name hostname verification (the rig is
+addressed by IP on loopback), IPv6 transport (the rig binds v4 loopback only), proxies
+(`http.client` ignores proxy-environment settings **by design** — the fetcher records the hops it
+makes instead of being silently routed), network weather, and bodies larger than the cap on a real
+deployment. The network itself is the limit; everything above loopback is tested by the vector.
+
 ## The vectors, with expected and actual results
 
 Every row below was run on the tree as shipped. `expected.txt` in each vector directory records the
@@ -356,6 +446,7 @@ same thing, plus the requirement identifiers the case exercises.
 | 63 | `63-ltv-unclaimed-material` | the same material as 59 under `ltv:false`: a finding, exit unchanged | **1** | **0** |
 | 64 | `64-ltv-timestamp-unverified` | one byte flipped in a carried archival timestamp: it names its imprint and its signature does not verify | **1** | **1** |
 | 65 | `65-ltv-carried-revocation` | the CRL the container carries lists the sealer as revoked | **1** | **1** |
+| 66 | `66-fetch-local` | the fetcher and the pair (13 arms, one driver): AIA/CDP extraction, a live nonce-matched OCSP answer and two CRLs fetched over loopback, the fetched directory verified CONFORMANT, the same material still refusing to satisfy `ltv:true`, and the refusals — delta CRL, responder errors named (`trylater (3)`, `unauthorized (6)`), `file://` redirect, redirect cap, `--max-bytes`, untrusted TLS | 0 (driver) | **0** |
 
 Rows 59–65 are the long-term-validation vectors and they close the last item the P3 verifier had
 open: it reported LTV material as present or absent and never validated it. **59** is the arm that may
@@ -379,6 +470,16 @@ against, the LTV question is **not decided** — a verifier that refused there w
 material bad because it was not given the means to check it. The definition those rows check is
 **MA-84**, the next free identifier: nothing was renumbered, and MA-1 … MA-83 are the same set as
 before.
+
+Row 66 is the first vector run against a **third** tool, and it is in the table for the same reason
+the others are: a fetcher with no vector is a claim, not a check. It differs from every row above in
+that it moves its own bytes first — the rig is loopback test tooling that starts and stops inside the
+vector's one command — and in that its "expected" is not one exit code but thirteen, each arm's exit
+and its must-print lines both checked by the driver. What it adds to the suite is the handoff arm:
+material that arrived over a network is verified by the same offline verifier that verifies material
+handed over by hand, and the run reports CONFORMANT only because the verifier's own checks — not the
+fetch — say so. [The revocation fetcher](#the-revocation-fetcher) above documents the tool, its
+gates and its mutants.
 
 11b is the residual of §7.4.3 in one line: without the predecessor, a dropped record is invisible,
 and the validator says the layer was not armed rather than implying a pass.
@@ -602,7 +703,7 @@ export binary on this host, so a real export could not be manufactured. The payl
 vectors is the grammar that emitter writes — verified against its source, not against a run — but
 that is a reading of a document, not a measurement of a package, and it is marked as such in Annex A.
 
-## What "draft 0.2" means here
+## What "draft 0.3" means here
 
 - The normative requirements are complete enough to implement against and to cite: the validator in
   this repository is one implementation of them, and the vectors are its evidence.

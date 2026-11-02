@@ -1,0 +1,940 @@
+#!/usr/bin/env python3
+"""p3-fetch — fetch revocation material (CRLs, OCSP responses) over the network,
+in exactly the byte shapes validator/p3-verify consumes (--revocation FILE,
+--ocsp-response FILE, --revocation-dir DIR).
+
+  spec: MARTELAGE §9.3.2 (MA-85) — a fetch is TRANSPORT, not trust.
+
+THIS TOOL IS NOT A VALIDATOR. It decides nothing about any package. It prints
+no conformance verdict of MARTELAGE, it never decides a package's status, and
+its exit codes are NOT §10.3's — they mean what "transport result" says below,
+nothing else. What a fetch establishes is where bytes came from; it adds
+nothing to what the bytes mean: every check that gives them meaning (signature,
+window, entry list, CertID match, chain) is the verifier's, and is performed by
+validator/p3-verify, which has no network path at all (§9.3.1, §10.1). MA-85:
+a fetch establishes no freshness, no honesty of the responder, no identity
+between the URL's owner and the CA, and no status at any time other than the
+window the material itself states — every run of this tool says so, by
+printing the NOT ESTABLISHED block.
+
+EXIT CODES — transport codes, never §10.3's meanings:
+  0  every requested item was fetched, parsed and written, and no fetched
+     value states revoked;
+  1  every requested item was fetched and written, and at least one fetched
+     value states REVOKED — a read fact about the material, printed as
+     "answered revoked" and never as a verdict; the verifier decides;
+  2  usage error, an unreadable input, or NOTHING fetched at all;
+  3  partial — at least one item has no usable answer (non-2xx after
+     redirects, timeout, size cap, redirect cap, refused scheme, unparsable
+     bytes, a delta CRL, an unsuccessful OCSP status, an overwrite refusal)
+     while at least one other succeeded; every success is still written and
+     recorded.
+Precedence when a run qualifies for several: 2 before 3 before 1 before 0.
+
+WHAT IT WRITES: material into --out DIR and nothing else there — DIR is
+handable to `p3-verify --revocation-dir` directly (that flag makes a run
+undecidable on any file it cannot parse, so a provenance record must never
+live inside it; it is written BESIDE the directory, as DIR.fetch.json).
+Bytes are written exactly as received — no re-encoding — under names carrying
+a sha256 prefix: crl-<issuer-CN-slug>-<hash8>.pem|.der and
+ocsp-<serial>-<hash8>.pem|.der. Scratch files live in one private directory
+under the system temp dir and are removed when the run ends; the tool writes
+nothing else anywhere (see --out's guard against writing into a package).
+
+WHY NO SHARED MODULE WITH validator/: the small PEM/DER sniffing below is
+re-derived rather than imported because a shared module is the path by which
+a validator later grows a network import — the no-network property of the
+verifiers is a property of a directory (validator/), checked by reading it,
+and this tool must never become a reason to change that.
+
+WHY http.client AND NEVER urllib.request: urllib follows redirects silently,
+injects proxy-environment settings, and records neither the hops nor the peer;
+this tool must show every hop, apply its scheme allowlist to every one of
+them, and cap the read. urllib.parse is used for URL parsing only — no
+function in it performs I/O. The `openssl` binary performs every cryptographic
+byte (request build, parse checks); its text output is parsed the way
+validator/p3-verify parses it, independently re-derived here.
+
+usage: tools/p3-fetch --out DIR [--cert FILE ...] [--url URL ...] [--kind auto|crl|ocsp]
+                      [--issuer FILE] [options]
+"""
+
+import argparse
+import base64
+import datetime
+import hashlib
+import http.client
+import json
+import os
+import re
+import shutil
+import socket  # for the exception classes only; no raw sockets are opened
+import ssl
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.parse
+
+PROG = "p3-fetch"
+SPEC = "MARTELAGE §9.3.2 (MA-85)"
+DEFAULT_TIMEOUT = 30          # seconds, per socket operation AND per requested item
+DEFAULT_MAX_BYTES = 20 * 1024 * 1024   # 20 MiB, per response body
+DEFAULT_REDIRECTS = 3         # Location hops to follow past the initial request
+SCHEMES = ("http", "https")   # the allowlist, applied to the first URL AND every hop
+REDIRECT_STATUSES = (301, 302, 303, 307, 308)
+CHUNK = 65536
+
+# printed on every run, verbatim (§9.3.2 MA-85's four non-establishments)
+NOT_ESTABLISHED = [
+    "freshness — that the material is current now, or was current at any time "
+    "other than the window the material itself states;",
+    "responder honesty — that whoever answered is the honest holder of the key "
+    "the material is signed under;",
+    "CA-to-URL ownership — that the party answering the URL is the CA that "
+    "named it, or is accountable to that CA in any way;",
+    "any status at any time outside the window the material itself states.",
+]
+
+# delta CRLs are REFUSED, never written: validator/p3-verify has no delta-CRL
+# handling (measured: zero delta handling in its code), so it would read a
+# delta as a FULL CRL — writing one would manufacture a false "clean".
+DELTA_MARKER = "X509v3 Delta CRL Indicator"
+
+
+class Refused(Exception):
+    """one requested item has no usable answer; `.why` is printed and recorded."""
+
+
+class InputError(Exception):
+    """an invocation or input problem, before any transport: exit 2."""
+
+
+# ── the openssl binary performs every cryptographic byte ────────────────────
+
+def openssl(argv, label=""):
+    """run one openssl command (`openssl` + argv, no shell, output captured)."""
+    try:
+        proc = subprocess.run(["openssl"] + argv, capture_output=True)  # noqa: S603 - fixed argv, no shell
+    except OSError as exc:
+        raise InputError("cannot run openssl: %s (%s)" % (exc, label or argv[0]))
+    return proc
+
+
+def errline(proc):
+    """first non-empty stderr line, for naming a refusal."""
+    for line in proc.stderr.decode("utf-8", "replace").splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+# ── URL extraction from a certificate: AIA (OCSP) and CRLDP ─────────────────
+
+def _section_lines(text, header_re):
+    """the indented body lines of every section whose header matches, in
+    `openssl x509 -text` output: a section runs until the first line that is
+    empty or indented no deeper than its own header. The headers are INDENTED
+    (measured: 12 spaces), so anchoring at column 0 finds nothing — the bug
+    this helper exists to keep out."""
+    lines = text.splitlines()
+    out = []
+    for i, line in enumerate(lines):
+        if not re.match(header_re, line):
+            continue
+        indent = len(line) - len(line.lstrip())
+        for follow in lines[i + 1:]:
+            if not follow.strip():
+                break
+            if len(follow) - len(follow.lstrip()) <= indent:
+                break
+            out.append(follow)
+    return out
+
+
+def cert_urls(path):
+    """the fetchable URLs a certificate names: OCSP responders from AIA and CRL
+    URLs from CRLDP, read off `openssl x509 -text`. Returns (ocsp_list, crl_list,
+    other_list). URIs of other schemes are extracted too — the scheme allowlist
+    refuses them by name at fetch time rather than silently dropping them here."""
+    proc = openssl(["x509", "-in", path, "-noout", "-text"], "reading the certificate")
+    if proc.returncode != 0:
+        raise InputError("--cert %s is unreadable: not a certificate this openssl "
+                         "can read (%s)" % (path, errline(proc) or "no output"))
+    text = proc.stdout.decode("utf-8", "replace")
+
+    ocsp, crl, other = [], [], []
+    for line in _section_lines(text, r"(\s*)Authority Information Access:"):
+        m = re.search(r"OCSP\s*-\s*URI:(\S+)", line)
+        if m:
+            (ocsp if m.group(1).lower().startswith(("http://", "https://")) else other).append(m.group(1))
+    for line in _section_lines(text, r"(\s*)X509v3 CRL Distribution Points:"):
+        m = re.search(r"URI:(\S+)", line)
+        if m:
+            (crl if m.group(1).lower().startswith(("http://", "https://")) else other).append(m.group(1))
+    return ocsp, crl, other
+
+
+# ── the OCSP request: built by openssl, never sent by openssl ────────────────
+
+def build_ocsp_request(issuer, cert, want_nonce, tmp, debug):
+    """build the request DER with `openssl ocsp -issuer -cert [-nonce] -reqout`
+    and return (path, nonce_hex_or_None, request_text). The request is a FILE:
+    it is sent by THIS tool's http.client, never by openssl — openssl's own
+    HTTP client is opaque (no redirect control, no caps, no peer recording)
+    and is not used for transport."""
+    argv = ["ocsp", "-issuer", issuer, "-cert", cert]
+    if not want_nonce:
+        argv.append("-no_nonce")
+    req = os.path.join(tmp, "ocsp-request.der")
+    argv += ["-reqout", req]
+    proc = openssl(argv, "building the OCSP request")
+    if proc.returncode != 0 or not os.path.exists(req):
+        raise InputError("openssl could not build the OCSP request for %s under %s (%s)"
+                         % (cert, issuer, errline(proc) or "no request written"))
+    text = ""
+    proc = openssl(["ocsp", "-reqin", req, "-req_text"], "reading back the OCSP request")
+    if proc.returncode == 0:
+        text = proc.stdout.decode("utf-8", "replace")
+    if debug and text:
+        sys.stderr.write("debug: request text:\n%s\n" % text)
+    nonce = None
+    m = re.search(r"OCSP Nonce:\s*\n\s*([0-9A-Fa-f\s]+)", text)
+    if m:
+        nonce = re.sub(r"\s+", "", m.group(1)).upper()
+    return req, nonce, text
+
+
+# ── byte sniffing, re-derived (no import from validator/ — see module doc) ──
+
+def looks_pem_crl(data):
+    return b"-----BEGIN X509 CRL-----" in data
+
+
+def looks_pem_ocsp(data):
+    return b"-----BEGIN OCSP RESPONSE-----" in data
+
+
+def sniff_kind(data, tmp):
+    """what a fetched body is, by the same order validator/p3-verify applies to
+    a directory file: PEM headers first, then whichever of CRL or OCSP response
+    openssl can read the bytes as. Re-derived here on purpose (module doc:
+    why no shared module)."""
+    if looks_pem_crl(data) or looks_pem_ocsp(data):
+        return "crl" if looks_pem_crl(data) else "ocsp"
+    return "crl" if probe_parses_crl(data, tmp) else ("ocsp" if probe_parses_ocsp(data, tmp) else None)
+
+
+def probe_parses_crl(data, tmp):
+    """can openssl read these bytes as a CRL at all? Used by the sniffer and
+    (with the delta check) as the real validation."""
+    src = os.path.join(tmp, "probe-crl")
+    with open(src, "wb") as fh:
+        fh.write(data)
+    argv = ["crl", "-in", src, "-inform", "DER", "-noout", "-text"]
+    if looks_pem_crl(data):
+        argv = ["crl", "-in", src, "-noout", "-text"]
+    proc = openssl(argv, "parsing the fetched CRL")
+    return proc.returncode == 0 and "Certificate Revocation List" in proc.stdout.decode("utf-8", "replace")
+
+
+def probe_parses_ocsp(data, tmp):
+    """can openssl read these bytes as an OCSP response? A PEM body is decoded
+    to DER for the probe, as p3-verify does for its own inputs."""
+    blob = data
+    if looks_pem_ocsp(data):
+        block = re.search(rb"-----BEGIN OCSP RESPONSE-----(.*?)-----END OCSP RESPONSE-----", data, re.S)
+        if not block:
+            return False
+        try:
+            blob = base64.b64decode(re.sub(rb"\s+", b"", block.group(1)), validate=True)
+        except Exception:  # noqa: BLE001 - the point is "does not decode", not why
+            return False
+    path = os.path.join(tmp, "probe-ocsp.der")
+    with open(path, "wb") as fh:
+        fh.write(blob)
+    proc = openssl(["ocsp", "-respin", path, "-resp_text"], "parsing the fetched OCSP response")
+    text = proc.stdout.decode("utf-8", "replace")
+    # an error status (tryLater, unauthorized, ...) is a PARSED response: openssl
+    # reads it and names the error instead of printing a status line. Sniffing it
+    # as an OCSP response routes it to validate_ocsp, which refuses it by name.
+    return "OCSP Response Status" in text or "Responder Error:" in text
+
+
+# ── pre-write validation: nothing is written that does not parse ─────────────
+
+def validate_crl(data, tmp, debug):
+    """parse the fetched bytes as a CRL and read what they state: issuer CN,
+    window, revoked serials. A delta CRL refuses here, BEFORE any write."""
+    src = os.path.join(tmp, "check-crl")
+    with open(src, "wb") as fh:
+        fh.write(data)
+    argv = ["crl", "-in", src, "-noout", "-text"]
+    fmt = "PEM" if looks_pem_crl(data) else "DER"
+    if fmt == "DER":
+        argv = ["crl", "-in", src, "-inform", "DER", "-noout", "-text"]
+    proc = openssl(argv, "validating the fetched CRL")
+    text = proc.stdout.decode("utf-8", "replace")
+    if proc.returncode != 0 or "Certificate Revocation List" not in text:
+        raise Refused("it does not parse as a CRL (%s)" % (errline(proc) or "openssl printed no CRL"))
+    if DELTA_MARKER in text:
+        raise Refused("it is a DELTA CRL (%s present) — a delta is refused, never written: "
+                      "the verifier has no delta handling and would misread it as a full CRL, "
+                      "so writing it would manufacture a false 'clean'" % DELTA_MARKER)
+    if debug:
+        sys.stderr.write("debug: CRL text:\n%s\n" % text)
+    issuer = None
+    m = re.search(r"(?m)^\s*Issuer:\s*(.+?)\s*$", text)
+    if m:
+        issuer = m.group(1)
+    window = {}
+    for key in ("Last Update", "Next Update"):
+        mm = re.search(r"(?m)^\s*%s:\s*(.+?)\s*$" % key, text)
+        window[key] = mm.group(1) if mm else None
+    revoked = []
+    rev = re.search(r"(?m)^Revoked Certificates:\s*$", text)
+    if rev:
+        body = text[rev.end():]
+        stop = re.search(r"(?m)^\s*Signature Algorithm:", body)
+        if stop:
+            body = body[:stop.start()]
+        revoked = [mm.group(1).strip() for mm in re.finditer(r"(?m)^\s*Serial Number:\s*(.+?)\s*$", body)]
+    return {"parsed": "CRL", "fmt": fmt, "issuer": issuer, "window": window,
+            "revoked_serials": revoked}
+
+
+def validate_ocsp(data, tmp, sent_nonce, debug):
+    """parse the fetched bytes as an OCSP response and read what they state:
+    response status, per-certificate statuses and windows, and whether the
+    nonce we sent came back. The response's own SIGNATURE is not checked here —
+    that is the verifier's check against the issuer and the anchors; a fetch
+    validates only that the bytes parse and carry a status."""
+    src = os.path.join(tmp, "check-ocsp.der")
+    fmt = "PEM" if looks_pem_ocsp(data) else "DER"
+    if fmt == "PEM":
+        block = re.search(rb"-----BEGIN OCSP RESPONSE-----(.*?)-----END OCSP RESPONSE-----", data, re.S)
+        try:
+            blob = base64.b64decode(re.sub(rb"\s+", b"", block.group(1)), validate=True)
+        except Exception as exc:  # noqa: BLE001 - named below, not swallowed
+            raise Refused("it carries a PEM OCSP RESPONSE header whose base64 body does not decode (%s)" % exc)
+        with open(src, "wb") as fh:
+            fh.write(blob)
+    else:
+        with open(src, "wb") as fh:
+            fh.write(data)
+    proc = openssl(["ocsp", "-respin", src, "-resp_text"], "validating the fetched OCSP response")
+    text = proc.stdout.decode("utf-8", "replace")
+    if "OCSP Response Status" not in text:
+        # openssl 3.5.3 answers an unsuccessful response status by printing
+        # "Responder Error: trylater (3)" on STDOUT and no status line (stderr
+        # stays empty), so a refusal here must name that line — the fetched
+        # bytes DID parse, the responder answered with an error status.
+        m_err = re.search(r"(?m)^\s*Responder Error:\s*(.+?)\s*$", text)
+        if m_err:
+            raise Refused("the responder answered %r — a responder error carries no "
+                          "status for any certificate" % m_err.group(1).strip())
+        raise Refused("it does not parse as an OCSP response (%s)"
+                      % (errline(proc) or "openssl printed no response status"))
+    if debug:
+        sys.stderr.write("debug: OCSP response text:\n%s\n" % text)
+    m = re.search(r"(?m)^\s*OCSP Response Status:\s*(.+?)\s*$", text)
+    status = m.group(1).strip() if m else None
+    if status and not status.startswith("successful"):
+        raise Refused("the responder answered %r — a response that is not successful "
+                      "carries no status for any certificate" % status)
+    entries = []
+    for block in re.split(r"(?m)^\s*Certificate ID:\s*$", text)[1:]:
+        entry = {}
+        mm = re.search(r"Serial Number:\s*([0-9A-Fa-f:]+)", block)
+        entry["serial"] = mm.group(1).replace(":", "") if mm else None
+        mm = re.search(r"Cert Status:\s*(\w+)", block)
+        entry["status"] = mm.group(1) if mm else None
+        for key, field in (("This Update", "this_update"), ("Next Update", "next_update"),
+                           ("Revocation Time", "revocation_time")):
+            mm = re.search(r"(?m)^\s*%s:\s*(.+?)\s*$" % re.escape(key), block)
+            entry[field] = mm.group(1).strip() if mm else None
+        entries.append(entry)
+    nonce = None
+    mm = re.search(r"OCSP Nonce:\s*\n\s*([0-9A-Fa-f\s]+)", text)
+    if mm:
+        nonce = re.sub(r"\s+", "", mm.group(1)).upper()
+    if sent_nonce is None:
+        nonce_state = None       # --no-nonce: no match was possible
+    elif nonce is None:
+        nonce_state = "absent"   # we sent one; the answer carries none — replay not excluded
+    elif nonce == sent_nonce:
+        nonce_state = "matched"
+    else:
+        nonce_state = "mismatched"
+    return {"parsed": "OCSP response", "fmt": fmt, "response_status": status,
+            "entries": entries, "nonce_state": nonce_state,
+            "response_nonce": nonce,
+            "nonce_note": ("the response carries a nonce although none was sent (--no-nonce)"
+                           if sent_nonce is None and nonce else None)}
+
+
+# ── transport: http.client, manual redirects, a scheme allowlist on every hop ─
+
+def parse_url(url):
+    """parse one URL and apply the scheme allowlist. Applied to the FIRST url
+    and to every redirect Location alike: a redirect to file:// is refused,
+    never followed."""
+    parts = urllib.parse.urlsplit(url)
+    scheme = (parts.scheme or "").lower()
+    if scheme not in SCHEMES:
+        raise Refused("refusing scheme %r — only %s are fetched (%s)"
+                      % (scheme or "none", " and ".join(SCHEMES), url))
+    if not parts.hostname:
+        raise Refused("URL has no host: %s" % url)
+    return parts
+
+
+def tls_context(ca_dir):
+    """the TLS trust configuration: the system store by default, or --tls-ca-dir
+    (every regular file in it is loaded, hashed-capath style files included).
+    Returns (context, ca_source)."""
+    if ca_dir is None:
+        return ssl.create_default_context(), "system default"
+    if not os.path.isdir(ca_dir):
+        raise InputError("--tls-ca-dir %s is not a directory" % ca_dir)
+    ctx = ssl.create_default_context()
+    try:
+        ctx.load_verify_locations(capath=ca_dir)
+    except (ssl.SSLError, OSError, FileNotFoundError):
+        pass  # no hashed layout in this dir; the plain files below may still load
+    loaded, failed = 0, []
+    for name in sorted(os.listdir(ca_dir)):
+        path = os.path.join(ca_dir, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            ctx.load_verify_locations(path)
+            loaded += 1
+        except (ssl.SSLError, OSError):
+            failed.append(name)
+    if loaded == 0 and failed:
+        raise InputError("--tls-ca-dir %s: no certificate in it could be loaded (%s)"
+                         % (ca_dir, ", ".join(failed[:4])))
+    return ctx, "%s (%d file(s) loaded%s)" % (ca_dir, loaded,
+                                              "; skipped: " + ", ".join(failed[:4]) if failed else "")
+
+
+def peer_identity(conn):
+    """the TLS peer's identity, when https: the DER certificate's sha256, its
+    subject, the protocol version and cipher. Recorded, never trusted as
+    ownership — the record states the identity, not an endorsement."""
+    if conn.sock is None:
+        return None
+    der = conn.sock.getpeercert(binary_form=True)
+    if not der:
+        return None
+    info = conn.sock.getpeercert() or {}
+    subject = ", ".join("%s=%s" % (k, v) for rdn in info.get("subject", ())
+                        for k, v in rdn) or None
+    cipher = conn.sock.cipher()
+    return {"peer_cert_sha256": hashlib.sha256(der).hexdigest(),
+            "peer_subject": subject,
+            "tls_version": conn.sock.version(),
+            "cipher": cipher[0] if cipher else None}
+
+
+def read_capped(resp, cap, deadline, what):
+    """read one response body under the byte cap and the wall-clock deadline.
+    A body that stalls longer than the socket timeout, or that runs past
+    either cap, is a FAILURE — never a hang, never a truncation."""
+    chunks, total = [], 0
+    while True:
+        if time.monotonic() > deadline:
+            raise Refused("%s exceeded --timeout: the overall deadline for this item "
+                          "passed while reading the body" % what)
+        try:
+            piece = resp.read(min(CHUNK, cap - total + 1))
+        except (http.client.HTTPException, OSError) as exc:
+            if isinstance(exc, TimeoutError):
+                raise Refused("%s stalled: no byte for --timeout seconds (%s)" % (what, exc))
+            raise Refused("%s failed mid-read: %s" % (what, exc))
+        if not piece:
+            break
+        total += len(piece)
+        if total > cap:
+            raise Refused("%s exceeded --max-bytes (%d): aborted before anything was written"
+                          % (what, cap))
+        chunks.append(piece)
+    return b"".join(chunks)
+
+
+def fetch_url(url, method, body, content_type, opts, record):
+    """transport for one requested item: manual redirects, hop cap, scheme
+    allowlist on every hop, byte cap, wall-clock deadline. Returns
+    (data, hops, tls) — nothing has been written when this returns. Every hop
+    is recorded as it happens, so a refused run's record still shows how far
+    the transport got."""
+    hops, tls = [], None
+    record["hops"] = hops
+    deadline = time.monotonic() + opts.timeout
+    current, verb, payload = url, method, body
+    for hop_no in range(opts.redirects + 1):
+        if time.monotonic() > deadline:
+            raise Refused("exceeded --timeout (%ds) before the answer arrived" % opts.timeout)
+        parts = parse_url(current)   # allowlist, on the first URL and on every Location
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        sock_timeout = max(0.05, min(opts.timeout, deadline - time.monotonic()))
+        try:
+            if parts.scheme == "https":
+                conn = http.client.HTTPSConnection(parts.hostname, port, timeout=sock_timeout,
+                                                   context=opts.tls_ctx)
+            else:
+                conn = http.client.HTTPConnection(parts.hostname, port, timeout=sock_timeout)
+            headers = {"Accept": "application/pkix-crl, application/ocsp-response, */*"}
+            if verb == "POST":
+                headers["Content-Type"] = content_type
+                headers["Content-Length"] = str(len(payload))
+            conn.request(verb, urllib.parse.urlunsplit(("", "", parts.path or "/",
+                                                        parts.query, "")),
+                         body=payload if verb == "POST" else None, headers=headers)
+            resp = conn.getresponse()
+        except ssl.SSLCertVerificationError as exc:
+            raise Refused("TLS peer certificate is not trusted under %s: %s" % (opts.ca_source, exc))
+        except socket.gaierror as exc:
+            raise Refused("cannot resolve host %r (%s)" % (parts.hostname, exc))
+        except PermissionError as exc:
+            raise Refused("connection not permitted: %s" % exc)
+        except (http.client.HTTPException, OSError) as exc:
+            if isinstance(exc, TimeoutError):
+                raise Refused("timed out after %.1fs connecting to or reading from %s "
+                              "(a stalled transport is a failure, not a hang)"
+                              % (opts.timeout, current))
+            raise Refused("transport failed for %s: %s: %s" % (current, type(exc).__name__, exc))
+        if parts.scheme == "https" and tls is None:
+            tls = dict(peer_identity(conn) or {}, ca_source=opts.ca_source, sni=parts.hostname)
+            record["tls"] = tls
+        hop = {"url": current, "method": verb, "status": resp.status,
+               "content_type": resp.headers.get("Content-Type"),
+               "content_length": resp.headers.get("Content-Length")}
+        if resp.status in REDIRECT_STATUSES and resp.headers.get("Location"):
+            location = urllib.parse.urljoin(current, resp.headers["Location"])
+            hop["redirect_to"] = location
+            read_capped(resp, opts.max_bytes, deadline, "the redirect body")
+            hops.append(hop)
+            conn.close()
+            if hop_no == opts.redirects:
+                raise Refused("redirect cap (--redirects %d) exceeded: %s answered %d with "
+                              "another Location — refusing to follow past the cap"
+                              % (opts.redirects, current, resp.status))
+            # 301/302/303 say the answer lives elsewhere and carry no replayable
+            # body: they downgrade a POST to a GET (browser practice); 307/308
+            # preserve the method and re-send the body.
+            if resp.status in (301, 302, 303) and verb == "POST":
+                verb, payload = "GET", None
+            current = location
+            continue
+        if not (200 <= resp.status < 300):
+            hops.append(hop)
+            conn.close()
+            raise Refused("answered %d %s — fetch requires a 2xx answer"
+                          % (resp.status, resp.reason or ""))
+        data = read_capped(resp, opts.max_bytes, deadline, "the response body")
+        conn.close()
+        declared = hop["content_length"]
+        if declared is not None and declared.isdigit() and len(data) < int(declared):
+            hops.append(hop)
+            raise Refused("connection closed after %d of the %s bytes the response declared "
+                          "(a truncated body is a failure, not a shorter answer)"
+                          % (len(data), declared))
+        hop["bytes"] = len(data)
+        hops.append(hop)
+        return data, hops, tls
+    raise Refused("unreachable: the hop loop returns or raises on every path")  # pragma: no cover
+
+
+# ── naming and writing: bytes exactly as received, hash in the name ─────────
+
+def slugify(text, fallback="unknown"):
+    if not text:
+        return fallback
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", text).strip("-")
+    return (slug[:40] or fallback)
+
+
+def issuer_cn(dn):
+    if not dn:
+        return None
+    m = re.search(r"(?:^|[,/]\s*)CN\s*=\s*([^,/]+)", dn)
+    return m.group(1).strip() if m else None
+
+
+def target_name(kind, data, parsed):
+    """the material's file name: kind, an identity slug, and the sha256 prefix
+    of the bytes exactly as they will sit on disk."""
+    digest = hashlib.sha256(data).hexdigest()[:8]
+    ext = "pem" if (looks_pem_crl(data) or looks_pem_ocsp(data)) else "der"
+    if kind == "crl":
+        return "crl-%s-%s.%s" % (slugify(issuer_cn(parsed.get("issuer"))), digest, ext)
+    serial = (parsed.get("entries") or [{}])[0].get("serial")
+    return "ocsp-%s-%s.%s" % (slugify(serial), digest, ext)
+
+
+def guard_out_dir(out_dir):
+    """--out's two guards: never write into a package (a package is not scratch
+    space), and never overwrite existing material without --force. The first is
+    checked before anything is fetched; the second per item, before its write."""
+    if os.path.exists(out_dir) and not os.path.isdir(out_dir):
+        raise InputError("--out %s exists and is not a directory" % out_dir)
+    if os.path.exists(os.path.join(out_dir, "package.json")):
+        raise InputError("--out %s holds a package.json — a package is not scratch space; "
+                         "fetch into a fresh directory and hand that to the verifier" % out_dir)
+    os.makedirs(out_dir, exist_ok=True)
+
+
+def write_material(out_dir, name, data, force):
+    """write the bytes exactly as received; refuse an overwrite without --force.
+    The only two places this tool ever writes are this directory and the
+    provenance record beside it (plus its own scratch under the system temp)."""
+    path = os.path.join(out_dir, name)
+    if os.path.exists(path) and not force:
+        raise Refused("would overwrite an existing file: %s (--force to allow)" % name)
+    with open(path, "wb") as fh:
+        fh.write(data)
+    return path
+
+
+# ── the record: what was asked, what answered, what was written ──────────────
+
+def record_path(out_dir):
+    """BESIDE the directory, never inside it: --revocation-dir makes a run
+    undecidable on any file it cannot parse, so the provenance record must not
+    live where the material lives."""
+    parent = os.path.dirname(os.path.abspath(out_dir)) or "."
+    return os.path.join(parent, os.path.basename(out_dir) + ".fetch.json")
+
+
+def now_iso():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class Opts:
+    """the run-wide transport options, bundled for fetch_url."""
+
+
+# ── the run ──────────────────────────────────────────────────────────────────
+
+def build_items(args):
+    """the requested items: one per --url, and one per fetchable URL each --cert
+    names. A certificate offering BOTH an OCSP URL and a CRL URL needs an
+    explicit --kind to say which to fetch — the ambiguity is a usage error,
+    not a guess. Repeatable --cert and --url each add their own items. A
+    certificate that names no fetchable URL is a note, not an item: no URL was
+    asked for, and the run says so rather than manufacturing a refusal."""
+    items = []
+    silent_certs = []
+    for cert in args.cert or []:
+        ocsp_urls, crl_urls, other = cert_urls(cert)
+        want = args.kind
+        if want == "auto" and ocsp_urls and crl_urls:
+            raise InputError("--cert %s offers both an OCSP URL (%s) and CRL URL(s) (%s): "
+                             "give --kind ocsp or --kind crl to say which to fetch"
+                             % (cert, ocsp_urls[0], ", ".join(crl_urls)))
+        if want in ("auto", "ocsp"):
+            for u in ocsp_urls:
+                items.append({"cert": cert, "url": u, "kind": "ocsp", "asked": u})
+        if want in ("auto", "crl"):
+            for u in crl_urls:
+                items.append({"cert": cert, "url": u, "kind": "crl", "asked": u})
+        for u in other:
+            items.append({"cert": cert, "url": u, "kind": args.kind if args.kind != "auto" else "crl",
+                          "asked": u})
+        if not ocsp_urls and not crl_urls and not other:
+            silent_certs.append(cert)
+    for url in args.url or []:
+        kind = args.kind
+        if kind == "ocsp":
+            if not args.cert:
+                raise InputError("--kind ocsp needs --cert: the CertID is built from the "
+                                 "certificate's serial under --issuer's name and key hash")
+            items.append({"url": url, "kind": kind, "asked": url, "cert": args.cert[0]})
+        else:
+            items.append({"url": url, "kind": kind, "asked": url})
+    if silent_certs:
+        sys.stderr.write("%s: note: %s names no AIA OCSP responder and no CRL distribution "
+                         "point — nothing to extract and fetch from it\n"
+                         % (PROG, ", ".join(silent_certs)))
+    if not items:
+        raise InputError("nothing asked: no --url given and the --cert file(s) named no "
+                         "fetchable URL")
+    if any(it["kind"] == "ocsp" for it in items):
+        if not args.issuer:
+            raise InputError("an OCSP request needs --issuer: the CertID is built from the "
+                             "issuer's name and key hash")
+        proc = openssl(["x509", "-in", args.issuer, "-noout", "-subject"], "reading the issuer")
+        if proc.returncode != 0:
+            raise InputError("--issuer %s is unreadable: not a certificate this openssl "
+                             "can read (%s)" % (args.issuer, errline(proc) or "no output"))
+    return items
+
+
+def run_item(item, args, opts, tmp, debug):
+    """one requested item, end to end: build the request, transport, validate
+    BEFORE writing, write bytes as received. Returns the item's record."""
+    record = {"asked": item["asked"], "kind": item["kind"],
+              "retrieved_at": now_iso(), "hops": [], "tls": None,
+              "written": None, "bytes": None, "sha256": None,
+              "content_type": None, "content_length": None,
+              "parsed": None, "error": None}
+
+    def parsed_as(kind_resolved):
+        record["kind"] = kind_resolved
+
+    try:
+        verb, payload, ctype = "GET", None, None
+        sent_nonce = None
+        if item["kind"] == "ocsp":
+            req, sent_nonce, _ = build_ocsp_request(args.issuer, item["cert"],
+                                                    not args.no_nonce, tmp, debug)
+            with open(req, "rb") as fh:
+                payload = fh.read()
+            verb, ctype = "POST", "application/ocsp-request"
+            record["requested"] = {"issuer": args.issuer, "cert": item["cert"],
+                                   # fingerprint of the nonce as openssl printed it (hex TLV,
+                                   # 04-length prefix included): identifies what was sent
+                                   "nonce_sha256": (hashlib.sha256(bytes.fromhex(sent_nonce)).hexdigest()
+                                                    if sent_nonce else None)}
+        data, hops, tls = fetch_url(item["url"], verb, payload, ctype, opts, record)
+        last = hops[-1] if hops else {}
+        record["content_type"] = last.get("content_type")
+        record["content_length"] = last.get("content_length")
+
+        kind = item["kind"]
+        if kind == "auto":
+            kind = sniff_kind(data, tmp)
+            if kind is None:
+                raise Refused("the body parses as neither a CRL nor an OCSP response, so "
+                              "--kind auto cannot establish what it is; nothing was written")
+            parsed_as("auto→" + kind)
+        else:
+            parsed_as(kind)
+        if kind == "crl":
+            parsed = validate_crl(data, tmp, debug)
+        else:
+            parsed = validate_ocsp(data, tmp, sent_nonce, debug)
+        record["parsed"] = parsed
+        record["revoked"] = (parsed.get("revoked_serials") if kind == "crl"
+                             else [e["serial"] for e in parsed.get("entries", [])
+                                   if e.get("status") == "revoked"])
+        name = target_name(kind, data, parsed)
+        path = write_material(args.out, name, data, args.force)
+        record["written"] = os.path.basename(path)
+        record["bytes"] = len(data)
+        record["sha256"] = hashlib.sha256(data).hexdigest()
+    except Refused as exc:
+        record["error"] = str(exc)
+    return record
+
+
+def print_report(records, out_dir, record_file, exit_code, args):
+    """the transport report, on every run: what was asked, what answered, what
+    was written, what was NOT established — and never a verdict."""
+    print("%s: transport only — this tool decides nothing about any package (%s)" % (PROG, SPEC))
+    print("asked: %d item(s)" % len(records))
+    for idx, record in enumerate(records, 1):
+        print("[%d/%d] %s %s" % (idx, len(records), record["kind"] or "?", record["asked"]))
+        for hop in record["hops"]:
+            line = "    %s %s %s" % (hop.get("method", "GET"), hop.get("status"), hop["url"])
+            if hop.get("redirect_to"):
+                line += " -> %s" % hop["redirect_to"]
+            extras = ", ".join(x for x in (
+                "content-type: %s" % hop["content_type"] if hop.get("content_type") else None,
+                "length: %s" % hop["content_length"] if hop.get("content_length") else None,
+                "%d bytes read" % hop["bytes"] if hop.get("bytes") is not None else None,
+            ) if x)
+            print("%s (%s)" % (line, extras) if extras else line)
+        if record["tls"]:
+            print("    tls peer: sha256 %s, subject %s, %s, %s (CA source: %s)"
+                  % (record["tls"]["peer_cert_sha256"], record["tls"]["peer_subject"] or "?",
+                     record["tls"]["tls_version"], record["tls"]["cipher"],
+                     record["tls"]["ca_source"]))
+        if record["parsed"] and record["kind"] and record["kind"].endswith("crl") and record["written"]:
+            print("    parsed %s (%s), issuer %s, window %s .. %s"
+                  % (record["parsed"]["parsed"], record["parsed"]["fmt"],
+                     record["parsed"]["issuer"] or "?",
+                     record["parsed"]["window"]["Last Update"] or "none",
+                     record["parsed"]["window"]["Next Update"] or "none"))
+        elif record["parsed"] and record["written"]:
+            parsed = record["parsed"]
+            print("    parsed %s (%s), response status %s, %d entr(ies)"
+                  % (parsed["parsed"], parsed["fmt"], parsed["response_status"],
+                     len(parsed["entries"])))
+            nonce_print = parsed["nonce_state"]
+            if nonce_print is None:
+                nonce_print = ("none sent (--no-nonce)" if args.no_nonce
+                               else "none sent (no OCSP request was built)")
+            print("    nonce: %s%s" % (nonce_print,
+                                       " — %s" % parsed["nonce_note"] if parsed["nonce_note"] else ""))
+        if record["written"]:
+            print("    wrote %s/%s (%s bytes as received, sha256 %s)"
+                  % (args.out, record["written"], record["bytes"], record["sha256"]))
+        if record.get("revoked"):
+            print("    answered revoked: serial(s) %s — a read fact about the material, "
+                  "not a verdict; the verifier decides" % ", ".join(record["revoked"]))
+        if record["error"]:
+            print("    REFUSED: %s" % record["error"])
+    written = [r for r in records if r["written"]]
+    revoked = [r for r in records if r.get("revoked")]
+    if revoked:
+        print("answered revoked: %d fetched value(s) state revoked — the verifier decides "
+              "what that means for any package" % len(revoked))
+    print("not established, by any run of this tool:")
+    for line in NOT_ESTABLISHED:
+        print("  * %s" % line)
+    print("  what was established is transport only: the bytes above were received from "
+          "the URLs above at the times above. Every check that gives them meaning is the "
+          "verifier's: hand %s to validator/p3-verify." % out_dir)
+    if record_file:
+        print("record: %s" % record_file)
+    meanings = {
+        0: "all %d item(s) fetched, parsed and written; no fetched value states revoked" % len(written),
+        1: "fetched and written, and at least one fetched value states revoked",
+        2: "usage error, an unreadable input, or nothing fetched",
+        3: "partial: %d of %d item(s) have no usable answer; every success was still written"
+           % (len(records) - len(written), len(records)),
+    }
+    print("exit: %d — %s" % (exit_code, meanings[exit_code]))
+    print("      these are transport codes, not §10.3's: this tool is not a validator and "
+          "reports no conformance verdict (%s)." % SPEC)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog=PROG,
+        description=__doc__.split("\n\n")[0],
+        epilog="This tool decides NOTHING about any package. Its exit codes are transport "
+               "codes: 0 all asked items fetched, parsed, written, nothing states revoked; "
+               "1 all written and at least one fetched value states revoked (a read fact, "
+               "never a verdict); 2 usage error, unreadable input, or nothing fetched; "
+               "3 partial (at least one item unusable, at least one succeeded). They are "
+               "not §10.3's codes and mean nothing about a package's status (%s). "
+               "Validate what it writes with validator/p3-verify." % SPEC,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--cert", action="append", metavar="FILE",
+                    help="a certificate whose AIA OCSP URL and/or CRLDP CRL URL(s) are "
+                         "extracted and fetched (repeatable). A certificate offering BOTH "
+                         "needs an explicit --kind ocsp|crl. With --kind ocsp the first "
+                         "--cert is also the request's subject certificate — its serial, "
+                         "under --issuer's name and key hash, builds the CertID")
+    ap.add_argument("--url", action="append", metavar="URL",
+                    help="fetch this URL instead of extracting one from a certificate "
+                         "(repeatable)")
+    ap.add_argument("--kind", choices=("auto", "crl", "ocsp"), default="auto",
+                    help="what to ask for: crl = GET and validate as a CRL; ocsp = build an "
+                         "OCSP request from --issuer and --cert and POST it; auto (default) = "
+                         "GET and sniff the answer's bytes, refusing what parses as neither")
+    ap.add_argument("--issuer", metavar="FILE",
+                    help="the issuer certificate of the --cert whose status is asked: its "
+                         "name and key hash build the CertID. Required for every OCSP fetch")
+    ap.add_argument("--out", required=True, metavar="DIR",
+                    help="the directory the material is written into — handable straight to "
+                         "`p3-verify --revocation-dir`. Refused for a directory holding "
+                         "package.json, and existing files are not overwritten without --force; "
+                         "the provenance record is written BESIDE the directory, as DIR.fetch.json")
+    ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, metavar="SECONDS",
+                    help="seconds per socket operation AND per requested item (default %d); "
+                         "a stalled body is a failure, not a hang" % DEFAULT_TIMEOUT)
+    ap.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES, metavar="N",
+                    help="response size cap in bytes (default %d = 20 MiB); a body past the "
+                         "cap aborts before anything is written" % DEFAULT_MAX_BYTES)
+    ap.add_argument("--redirects", type=int, default=DEFAULT_REDIRECTS, metavar="N",
+                    help="redirect hops to follow past the initial request (default %d); "
+                         "the scheme allowlist applies to every hop, so a redirect to "
+                         "file:// is refused, not followed" % DEFAULT_REDIRECTS)
+    ap.add_argument("--tls-ca-dir", metavar="DIR",
+                    help="trust store for https (default: the system store); recorded in "
+                         "the provenance record either way")
+    ap.add_argument("--no-nonce", action="store_true",
+                    help="send no OCSP nonce (the default is a nonce, and whether it came "
+                         "back is recorded per response)")
+    ap.add_argument("--force", action="store_true",
+                    help="allow overwriting an existing file in --out")
+    ap.add_argument("--debug", action="store_true",
+                    help="print the openssl texts and transport detail to stderr")
+    args = ap.parse_args(argv)
+
+    if args.timeout <= 0:
+        ap.error("--timeout must be > 0")
+    if args.max_bytes <= 0:
+        ap.error("--max-bytes must be > 0")
+    if args.redirects < 0:
+        ap.error("--redirects must be >= 0")
+
+    guard_out_dir(args.out)          # package.json guard, before anything is fetched
+    items = build_items(args)        # may raise InputError -> exit 2
+
+    tls_ctx, ca_source = tls_context(args.tls_ca_dir)
+    opts = Opts()
+    opts.timeout = args.timeout
+    opts.max_bytes = args.max_bytes
+    opts.redirects = args.redirects
+    opts.tls_ctx = tls_ctx
+    opts.ca_source = ca_source
+
+    tmp = tempfile.mkdtemp(prefix="p3-fetch.")
+    records = []
+    try:
+        for item in items:
+            records.append(run_item(item, args, opts, tmp, args.debug))
+    except InputError as exc:
+        sys.stderr.write("%s: %s\n" % (PROG, exc))
+        return 2
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # the transport exit: 2 before 3 before 1 before 0 (module docstring)
+    written = [r for r in records if r["written"]]
+    has_revoked = any(r.get("revoked") for r in records)
+    if not written:
+        exit_code = 2
+    elif len(written) < len(records):
+        exit_code = 3
+    elif has_revoked:
+        exit_code = 1
+    else:
+        exit_code = 0
+
+    # the provenance record: beside the directory, on every run that asked for
+    # something. If it cannot be written, the run did not complete as asked and
+    # says so rather than leaving material whose provenance nothing holds.
+    rpath = record_path(args.out)
+    document = {
+        "tool": PROG,
+        "spec": SPEC,
+        "not_a_validator": "this record describes TRANSPORT. It establishes nothing about "
+                           "any package; the material it names is evidence only after "
+                           "validator/p3-verify checks it.",
+        "retrieved_at": now_iso(),
+        "out_dir": os.path.abspath(args.out),
+        "transport_exit": exit_code,
+        "not_established": NOT_ESTABLISHED,
+        "requests": records,
+    }
+    try:
+        with open(rpath, "w") as fh:
+            json.dump(document, fh, indent=2)
+            fh.write("\n")
+    except OSError as exc:
+        sys.stderr.write("%s: the provenance record %s could not be written: %s — "
+                         "the run did not complete as asked\n" % (PROG, rpath, exc))
+        return 2
+
+    if args.debug:
+        sys.stderr.write("debug: record document:\n%s\n" % json.dumps(document, indent=2))
+    print_report(records, args.out, rpath, exit_code, args)
+    return exit_code
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except InputError as exc:
+        sys.stderr.write("%s: %s\n" % (PROG, exc))
+        sys.exit(2)
+    except KeyboardInterrupt:
+        sys.stderr.write("%s: interrupted — nothing further was written\n" % PROG)
+        sys.exit(130)

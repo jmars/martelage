@@ -432,6 +432,30 @@ ever downloaded, a revocation published after a CRL's or a response's <code>next
 invisible, a supplied status is the status now and not at the claimed time, and long-term validation
 is still never validated.</p>
 
+<p><strong>Where the material may come from: the fetcher.</strong> Material does not have to be
+handed over by hand. <code>tools/p3-fetch</code> is a <strong>fetcher</strong> — a transport tool
+that sits <em>beside</em> the verifier and is not part of it (§9.3.2, MA-85). Given a certificate, it
+reads the OCSP URL from the certificate's AIA and the CRL URLs from its CRL distribution points (or
+takes explicit URLs), fetches the material over <code>http</code> or <code>https</code>, and writes
+it — exactly the bytes that answered, never re-encoded — into a directory
+<code>--revocation-dir</code> accepts unchanged, with a provenance record (every hop, the TLS peer's
+certificate hash, whether the nonce it sent came back, the sha256, the retrieval time) written
+<em>beside</em> the directory, never inside it. It refuses before writing anything that does not
+parse, that is a delta CRL, that answers a responder error (<code>tryLater</code>,
+<code>unauthorized</code>), that redirects to a scheme it does not fetch, that outruns its redirect
+cap, its byte cap or its timeout, or whose TLS peer does not verify under the anchor directory it was
+given. The transport sentence, stated plainly: <strong>a fetch is transport, not trust</strong> — it
+establishes where bytes came from and nothing about what they mean. It establishes no freshness, no
+honesty of the responder, no identity between the URL's owner and the CA, and no status at any time
+outside the window the material itself states; every run of the tool says so. It is not a validator
+and reports no verdict — the verifier decides, by re-making every check it makes on material handed
+over by any other means, which its own report states (<em>"read from disk, offline: nothing is
+fetched"</em>). And one boundary does not move: fetched material can never satisfy an
+<code>ltv:true</code> claim (§9.3.1, MA-84), because that claim asserts evidence the container
+carries inside the seal, and no directory of bytes fetched at check time carries anything. Vector
+66's pair arm runs the whole path — fetch over a loopback rig, then verify the fetched directory —
+and the run is CONFORMANT only because the verifier's own checks say so.</p>
+
 <p><strong>The clause is checked over the whole signer set.</strong> A signature entry may carry more
 than one signer, and the operator only has to be one of them. The verifier enumerates <em>every</em>
 signer of <em>every</em> entry from openssl's <code>-signer</code> output, holds that count against the

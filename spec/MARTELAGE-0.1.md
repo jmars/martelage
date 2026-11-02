@@ -1,8 +1,8 @@
-# MARTELAGE-0.2 — The Evidence Package Standard
+# MARTELAGE-0.3 — The Evidence Package Standard
 
-**Status:** draft 0.2 — published for adoption and criticism. Not yet a stable standard.
-**Identifier of this document:** `martelage 0.2`. The wire identifier of the package format it defines is
-`"standard":"martelage","v":1` — unchanged by this document's version, and §11.7 says why.
+**Status:** draft 0.3 — published for adoption and criticism. Not yet a stable standard.
+**Identifier of this document:** `martelage 0.3`. The wire identifier of the package format it defines is
+`"standard":"martelage","v":1` — unchanged by this document's version, and §11.7 and §11.8 say why.
 **Filename:** this text lives in `spec/MARTELAGE-0.1.md` and keeps that name. A draft's filename is a
 *path* — the thing every link, the site's staging step and the vectors' pointers resolve — and the
 identifier above is the *version*. Renaming the path to track the version would break every one of
@@ -88,7 +88,7 @@ trusted by the producer to be anything in particular.
 
 ## 2. Conformance
 
-**2.1 What conformance is.** A package is conformant with MARTELAGE-0.2 when all of the following hold.
+**2.1 What conformance is.** A package is conformant with MARTELAGE-0.3 when all of the following hold.
 There is no other definition, no level above it and no level below it. — **MA-6**
 
 1. It is a directory containing `package.json` and at least one record stream file (§3).
@@ -109,7 +109,7 @@ self-consistent*; it says nothing about truth or completeness (§7.2.3, §10.7).
 the anchor is an optional slot inside it (§9.1). — **MA-8**
 
 **2.4 How a third party claims conformance.** By publishing a statement, in its own name, that its
-producer emits packages conformant with `martelage 0.2`, and naming the requirements it relies on and any
+producer emits packages conformant with `martelage 0.3`, and naming the requirements it relies on and any
 it does not satisfy with the reason. No registration, no permission and no fee is required. A
 conformance statement is a claim under the claimant's own name; this standard does not certify
 anyone. Annex C is the template. — **MA-9**
@@ -688,6 +688,41 @@ has preserved these bytes since, and not the status of anything the container do
 are questions for the archive that holds the package and for the services that publish the material,
 and outside this profile they stay open.
 
+**9.3.2 Material obtained from the network.** This subsection defines what a fetch is **at this
+version**, so that a fetch tool's honesty is citable the way a validator's is and an LTV claim's is
+(§9.3.1). A **fetch** is the retrieval of material over a network by a tool that is not a validator —
+revocation evidence is the case this standard knows (§9.3, §10.2) — and a fetch is **transport**:
+nothing about it is a check of this standard. — **MA-85**
+
+*A fetch is transport, not trust.* Material obtained from the network arrives as bytes with a
+provenance record, and it establishes nothing until a verifier re-checks it. The checks a verifier
+applies to supplied material are unchanged by how the material was obtained: a CRL that answered over
+a network is checked by exactly the rules that govern the same bytes supplied by hand — no more, and
+no less. What a fetch adds is where the bytes came from; it adds nothing to what they mean.
+
+*A fetch tool is not a validator.* A tool whose work is fetching MUST NOT report a conformance verdict
+of this standard, MUST NOT decide a package's status, and MUST NOT use the exit codes of §10.3 to
+mean a package's status. What it reports is the transport: what was asked, what answered, what was
+written, and what was not established — and a fetch establishes no freshness, no honesty of the
+responder, no identity between the URL's owner and the CA, and no status at any time other than the
+window the material itself states.
+
+*Fetched material is never LTV.* Material obtained by a fetch MUST NOT satisfy an `"ltv":true` claim
+(§9.3.1): an LTV claim asserts evidence the container carries **inside the seal**, and material
+fetched at verification time is a different fact — that a service answered just now. Conflating the
+two would let a live answer stand in for an archival one, which is the failure long-term validation
+exists to prevent, and the reason §9.3.1 forbids a verifier to fetch at all.
+
+*A statement that names a fetcher names the transport.* A conformance statement in the form of Annex C
+that names a fetch tool MUST name the retrieval time and the source it fetched from; without those two
+facts, the statement names material whose provenance no reader can establish.
+
+*The no-network property is unchanged.* Where this document binds a validator to run offline (§10.1)
+and states that no validator defined by this document has a network path (§9.3.1), it keeps that
+binding whole: this subsection adds a tool **beside** the verifier, and MUST NOT be read as licensing
+a network path inside one. A validator's lack of a network path is a property of its code, which a
+reader checks by reading it — not a promise about the code's behaviour.
+
 **9.4 An unknown profile name is an unverifiable claim.** A validator MUST refuse (exit code 1) a
 package whose `profile` it does not know, rather than ignoring the claim. — **MA-65**
 
@@ -828,7 +863,7 @@ unavailable field. — **MA-79**
 field)`, carries unknown record kinds verbatim with their bodies untouched, and refuses a version it
 does not support. — **MA-80**
 
-**11.6 What this document's own version means.** `martelage 0.2` is a *draft*: the normative requirements
+**11.6 What this document's own version means.** `martelage 0.3` is a *draft*: the normative requirements
 are complete enough to implement against and to cite, and the change policy of §11.2–11.3 applies to
 the wire format it defines from `v:1` onward. A change to a draft's requirement MAY be breaking; a
 change to a published `v` MUST NOT be. A conformance statement MUST name both the document version
@@ -871,6 +906,30 @@ published; the correction is this subsection and the header above, made in the c
 record that is corrected forward, and says that it was corrected forward, is worth more than a tag
 whose contents and whose description disagree.
 
+**11.8 What moved between `martelage 0.2` and `martelage 0.3`, and what did not.** This subsection
+records the change, because a version that moves without a record of what moved is a version claim a
+reader cannot check.
+
+*What moved:* the **surface beside the verifier — not the verifier, and not the wire**. At
+`martelage 0.3` this document adds §9.3.2 (MA-85), which names a class of tool the standard had not
+named — one that fetches material from the network, revocation evidence above all, and writes it down
+for a verifier to check — and states what such a fetch is and is not: transport, not trust, so fetched
+bytes are checked by exactly the rules that govern the same bytes supplied by hand; a fetch tool is
+not a validator, reports no verdict of this standard, and its exit codes are not §10.3's; fetched
+material satisfies no `"ltv":true` claim (§9.3.1), because an LTV claim asserts evidence the seal
+carries, and material fetched at verification time is a different fact; and a conformance statement
+that names a fetcher names the retrieval time and the source it fetched from.
+
+*What did not move:* the wire format. It stays `"v":1`. No field was added, removed or re-meant; no
+requirement of §2 through §10 changed its meaning. **A package written for `martelage 0.2` is a
+`martelage 0.3` package**, and a validator built against `martelage 0.2` decides it exactly as it did
+— `validator/martelage-verify` and `validator/p3-verify` are both untouched by this bump. The
+verifier's no-network property (§9.3.1, §10.1) does not move either: §9.3.2 adds a tool beside the
+verifier, never a network path inside one.
+
+*Identifiers:* one was added, **MA-85**. None was renumbered, reused or withdrawn; identifiers are
+permanent (§0.3).
+
 ---
 
 ## Annex A (informative) — one implementation, measured
@@ -880,7 +939,7 @@ removing this annex would leave the standard whole.
 
 **A.1 What it is.** `baliveau` is an append-only auditing system for a versioned deployment store. It
 publishes its record through a read contract, `baliveau-cnc v1`, as JSON Lines on stdout from a tool
-called `fx-export`. Baliveau is the first conformance case for MARTELAGE-0.2, not its definition.
+called `fx-export`. Baliveau is the first conformance case for MARTELAGE-0.3, not its definition.
 
 **A.2 The payload is byte-compatible with §6 today — MEASURED against the emitter's source.**
 `tools/fx-export.c` writes each record's envelope keys in exactly the order §6.2 requires, with
@@ -919,9 +978,9 @@ statement in the form of Annex C is the missing artifact.
 ## Annex B (informative) — prior art, surveyed from primary sources
 
 Each quote below was read from the named primary source on 2026-10-30 during this standard's
-research and is reproduced here as recorded then; it has not been re-read for draft 0.2, so treat the
-wording as MEASURED-as-of-that-date and re-verify before quoting it in a normative argument. Each
-entry states adopt / align / reject and the one decisive reason.
+research and is reproduced here as recorded then; it has not been re-read for draft 0.2 or any later
+draft, so treat the wording as MEASURED-as-of-that-date and re-verify before quoting it in a normative
+argument. Each entry states adopt / align / reject and the one decisive reason.
 
 1. **in-toto / DSSE** — ALIGN in the anchor profiles, REJECT as the base. "Authenticates the message
    and the type to avoid confusion attacks. Avoids canonicalization to reduce attack surface."
@@ -990,7 +1049,7 @@ definition.
 ## Annex C (informative) — conformance statement template
 
 > `<Claimant>` states that packages produced by `<producer component, version>` conform to
-> **MARTELAGE-0.2** (`martelage 0.2`, wire version `v:1`).
+> **MARTELAGE-0.3** (`martelage 0.3`, wire version `v:1`).
 >
 > Requirements satisfied: `<list of MA-n>`, or "all of §2.1".
 > Requirements not satisfied, with reason: `<MA-n>: <reason>` or "none".

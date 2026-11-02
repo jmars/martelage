@@ -15,6 +15,11 @@
 #   sh tools/mkcrl.sh                 # rebuild vectors/pki/crl-*
 #   sh tools/mkcrl.sh /some/other/pki # rebuild the CRLs of another PKI built
 #                                     # by mkpki.sh (tools/mkpki.sh calls this)
+#   ADD=delta sh tools/mkcrl.sh [pki] # build ONLY the delta CRL, touching nothing
+#                                     # else — how it was added to the shipped tree
+#                                     # without re-signing the shipped crl-* files
+#                                     # (an ECDSA signature differs on every run, so
+#                                     # a full rerun moves every existing digest)
 #
 # The DATES are fixed, so "expired" is expired on any host at any time, exactly
 # as the certificate dates are. The CRL bytes still change whenever the PKI is
@@ -69,16 +74,37 @@ policy            = policy_any
 commonName = optional
 [ crl_ext ]
 authorityKeyIdentifier = keyid:always
+[ crl_ext_delta ]
+authorityKeyIdentifier = keyid:always
+# the deltaCRLIndicator (2.5.29.27), by raw OID with an explicit DER value:
+# INTEGER 2. The friendly names ('deltaCRLIndicator', 'delta_crl_indicator') do
+# not exist in this openssl's extension table and a bare '2.5.29.27 = critical,
+# 2' is refused (MEASURED, 3.5.3); only OID + DER: works.
+2.5.29.27 = critical,DER:02:01:02
 EOF
 	: >"$pki/ca-$1.index"
 	printf '1000\n' >"$pki/ca-$1.crlnumber"
 }
 
-gencrl() { # $1: CA basename, $2: output basename, $3: thisUpdate, $4: nextUpdate
+gencrl() { # $1: CA basename, $2: output basename, $3: thisUpdate, $4: nextUpdate, $5: crlexts section (default crl_ext)
 	"$OPENSSL" ca -config "$pki/ca-$1.cnf" -gencrl \
-		-crl_lastupdate "$3" -crl_nextupdate "$4" -crlexts crl_ext \
+		-crl_lastupdate "$3" -crl_nextupdate "$4" -crlexts "${5:-crl_ext}" \
 		-out "$pki/$2" 2>/dev/null
 }
+
+# ADD=delta rebuilds ONLY the delta CRL, against an existing PKI: every other
+# CRL is re-signed by the full run below and an ECDSA signature differs on
+# every run, so a full rerun moves the digest of every shipped crl-*.
+if [ "${ADD:-}" = delta ]; then
+	cnf intermediateA
+	gencrl intermediateA crl-intermediateA-delta.pem "$NB_VALID" "$NA_VALID" crl_ext_delta
+	rm -f "$pki"/ca-*.cnf "$pki"/ca-*.index "$pki"/ca-*.crlnumber "$pki"/ca-*.crlnumber.old
+	chmod 644 "$pki"/crl-*.pem
+	printf 'mkcrl.sh: ADD=delta built %s/crl-intermediateA-delta.pem\n' "$pki"
+	"$OPENSSL" crl -in "$pki/crl-intermediateA-delta.pem" -noout -text | sed -n '/Delta CRL Indicator/,+1p'
+	exit 0
+fi
+[ -z "${ADD:-}" ] || { printf 'mkcrl.sh: unknown ADD=%s (delta is the only add-on)\n' "$ADD" >&2; exit 1; }
 
 # intermediateA — the CA that issued the sealer (signerA, serial 0x0A11)
 cnf intermediateA
@@ -93,6 +119,15 @@ gencrl intermediateA crl-intermediateA-revoked.pem "$NB_VALID" "$NA_VALID"
 : >"$pki/ca-intermediateA.index"
 # EXPIRED: nextUpdate in 2021, so it is expired on every host, forever
 gencrl intermediateA crl-intermediateA-expired.pem "$NB_VALID" "$NA_EXPIRED"
+: >"$pki/ca-intermediateA.index"
+
+# DELTA: the same CA, carrying a critical deltaCRLIndicator (2.5.29.27) — a
+# statement ABOUT another CRL, never a full one. It exists to be REFUSED by
+# tools/p3-fetch: the verifier has no delta handling (MEASURED, zero delta code
+# in validator/p3-verify) and would read it as an empty FULL CRL, manufacturing
+# a false 'clean'. Never hand it to the verifier; serve it from the rig to test
+# the refusal. Index empty: a delta's entries live in the base CRL it points at
+gencrl intermediateA crl-intermediateA-delta.pem "$NB_VALID" "$NA_VALID" crl_ext_delta
 : >"$pki/ca-intermediateA.index"
 
 # rootA — the anchor under which intermediateA was issued, so a CRL from it is
@@ -117,7 +152,7 @@ rm -f "$pki"/ca-*.cnf "$pki"/ca-*.index "$pki"/ca-*.crlnumber "$pki"/ca-*.crlnum
 chmod 644 "$pki"/crl-*.pem "$pki"/crl-*.der
 
 printf 'mkcrl.sh: built the CRLs under %s\n' "$pki"
-for f in intermediateA-clean intermediateA-revoked intermediateA-expired rootA-clean rootB-clean; do
+for f in intermediateA-clean intermediateA-revoked intermediateA-expired intermediateA-delta rootA-clean rootB-clean; do
 	printf '  %-22s %s\n' "$f" \
 		"$("$OPENSSL" crl -in "$pki/crl-$f.pem" -noout -issuer -nextupdate | tr '\n' ' ' | sed 's/  */ /g')"
 done

@@ -17,6 +17,12 @@
 #
 #   sh tools/mkocsp.sh                 # rebuild vectors/pki/ocsp-*
 #   sh tools/mkocsp.sh /some/other/pki # another PKI built by tools/mkpki.sh
+#   ADD=unknown sh tools/mkocsp.sh [pki] # build ONLY the 'unknown' response,
+#                                     # touching nothing else — how it was added to
+#                                     # the shipped tree without re-signing the
+#                                     # shipped ocsp-* files (an ECDSA signature
+#                                     # differs on every run, so a full rerun moves
+#                                     # every existing digest)
 #
 # WHY THE RESPONSES ARE RE-DATED. `openssl ocsp` timestamps a response with the
 # build second: thisUpdate is `now`, nextUpdate is `now + -ndays/-nmin`. Two
@@ -204,6 +210,22 @@ pem() { # $1: in DER, $2: out PEM — openssl writes OCSP responses as DER only
 	  printf -- '-----END OCSP RESPONSE-----\n'; } >"$2"
 }
 
+# ADD=unknown rebuilds ONLY the 'unknown' response, against an existing PKI:
+# every other response is re-signed by the full run below and an ECDSA
+# signature differs on every run, so a full rerun moves every shipped digest.
+if [ "${ADD:-}" = unknown ]; then
+	: >"$work/index-empty.txt"
+	request "$work/req-signerA-unknown.der" signerA
+	respond "$work/index-empty.txt" "$work/req-signerA-unknown.der" ocsp-responder "$work/unknown.der"
+	redate "$work/unknown.der" "$pki/ocsp-signerA-unknown.der" ocsp-responder "$NB_2020" "$NA_2099" "$NB_2020"
+	chmod 644 "$pki"/ocsp-signerA-unknown.der
+	printf 'mkocsp.sh: ADD=unknown built %s/ocsp-signerA-unknown.der\n' "$pki"
+	"$OPENSSL" ocsp -respin "$pki/ocsp-signerA-unknown.der" -resp_text -no_nonce 2>/dev/null |
+		grep -E 'Cert Status|Response Status' | tr -s ' '
+	exit 0
+fi
+[ -z "${ADD:-}" ] || { printf 'mkocsp.sh: unknown ADD=%s (unknown is the only add-on)\n' "$ADD" >&2; exit 1; }
+
 # ── the arms ─────────────────────────────────────────────────────────────────
 # good for the sealer (signerA, serial 0A11)
 index "$work/index-good.txt" V signerA 0A11
@@ -235,10 +257,21 @@ request "$work/req-signerC.der" signerC
 respond "$work/index-signerC.txt" "$work/req-signerC.der" ocsp-responder "$work/signerC.der"
 redate "$work/signerC.der" "$pki/ocsp-signerC-good.der" ocsp-responder "$NB_2020" "$NA_2099" "$NB_2020"
 
+# the answer for a certificate the responder's index does NOT hold at all: the
+# index is empty, so the serial the request asks about is 'unknown' — a
+# successful response that establishes nothing. The static byte shape of what
+# tools/revmirror.py's live responder answers when the asked-about certificate
+# is not in its database (tools/p3-fetch records that status and defers it; the
+# verifier, never the fetcher, decides what an 'unknown' is worth)
+: >"$work/index-empty.txt"
+request "$work/req-signerA-unknown.der" signerA
+respond "$work/index-empty.txt" "$work/req-signerA-unknown.der" ocsp-responder "$work/unknown.der"
+redate "$work/unknown.der" "$pki/ocsp-signerA-unknown.der" ocsp-responder "$NB_2020" "$NA_2099" "$NB_2020"
+
 chmod 644 "$pki"/ocsp-*.der "$pki"/ocsp-*.pem
 
 printf 'mkocsp.sh: built the OCSP responses under %s\n' "$pki"
-for f in signerA-good signerA-revoked signerA-expired signerA-rogue signerC-good; do
+for f in signerA-good signerA-revoked signerA-expired signerA-rogue signerA-unknown signerC-good; do
 	printf '  %-16s %s\n' "$f" \
 		"$("$OPENSSL" ocsp -respin "$pki/ocsp-$f.der" -resp_text -no_nonce 2>/dev/null |
 			grep -E 'Cert Status|This Update|Next Update|Serial Number' |
