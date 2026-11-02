@@ -1,0 +1,30 @@
+vector: 41-signature-broken
+what:   META-INF/manifest.xml was altered AFTER it was signed — one comment line
+        added, every stated digest left exactly as signed — so the container is
+        internally consistent in every respect except the one that matters: the
+        signature no longer covers the bytes it is attached to. Nothing else in the
+        container is touched, so this vector isolates the signature check from the
+        digest checks
+run:    validator/p3-verify --container vectors/41-signature-broken/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/41-signature-broken/pkg
+exit:   1
+also:   validator/p3-verify --container vectors/34-seal-verified/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem vectors/34-seal-verified/pkg
+          ->  exit 0
+        the same container before the manifest was touched
+must print:
+  - "does not verify over the exact bytes of META-INF/manifest.xml"
+  - "REFUSED"
+  - "the signature did not reach a verdict, so no chain was built"
+requirements exercised: MA-64, MA-70
+why it fails without the fix: MEASURED, and this is the vector that proves `openssl
+        cms -verify` is doing the work. In a copy of the verifier that adds openssl's
+        `-nosigs` — it parses the SignedData, finds the signer, builds the chain, and
+        does not check the signature value — this container reports CONFORMANT (exit
+        0), and that copy still reports 0 on vector 34. Every entry the manifest lists
+        is present with the digest it states, the sealed digests are the package's,
+        and the token verifies; the manifest's own digest is not covered by anything
+        else. The asymmetry is 0 against 1 with one XML comment added after signing

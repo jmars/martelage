@@ -75,7 +75,7 @@ coloured by state.
 Pasted output is never re-flowed as though the program had printed it that way. At 8.5 pt the
 portrait shell holds 99 characters (180.0 mm inner width); a block whose widest line is longer than
 that is set **smaller** — as small as that line needs, but never below a **7 pt legibility floor**,
-where the column holds 120 characters. Seven of the thirteen blocks are set smaller: two at 7.79 pt
+where the column holds 120 characters. Seven of the fourteen blocks are set smaller: two at 7.79 pt
 and one at 7.58 pt, whose widest line fits unbroken at that size, and four at the 7 pt floor. A line
 that does not fit even at 7 pt is broken **at a space** and the continuation is marked `↳`, so it is
 the marker, not the typesetter, that says a line was broken: eight lines in the document carry one,
@@ -86,13 +86,14 @@ like any other code. Two builds of the same source are byte-identical: `SOURCE_D
 pinned in the `Makefile`, so the PDF carries a constant creation date instead of the build second.
 
 **One orientation.** Every page is A4 portrait: the artifact contains no rotated sheet, no landscape
-insert, and no block that moves to a wider one. MEASURED on the built PDF — 14 pages, 14 `/MediaBox`
-entries, **one distinct value** (`0 0 595.2756 841.8898`), and no `/Rotate` on any page. That is 14
+insert, and no block that moves to a wider one. MEASURED on the built PDF — 15 pages, 15 `/MediaBox`
+entries, **one distinct value** (`0 0 595.2756 841.8898`), and no `/Rotate` on any page. That is 15
 pages against the landscape build's 16 and the portrait-with-flipped-inserts build's 22: the flip
 cost six pages over landscape because each insert broke the page before and after it, and putting
 code back into the portrait column gives those pages back. (It was 12 pages before the anchor
 profiles section of `usage.html` was written out — the two pages are that section, not a change of
-geometry: the page size, the measure and the code sizes are the same.) The browser print path is a
+geometry: the page size, the measure and the code sizes are the same. The P3 verifier, built since,
+adds one more page to that section, and the same holds: 15 pages, one page size, one measure.) The browser print path is a
 different path, and is stated plainly rather than matched: `@media print` in `site.css` still asks for
 `size: landscape` and `white-space: pre-wrap`, so printing the HTML from a browser gives a landscape
 sheet whose pasted lines re-wrap, while the artifact is portrait and marks every break it makes. The

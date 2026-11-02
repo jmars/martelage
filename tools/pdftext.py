@@ -46,15 +46,26 @@ def _stream(body):
     m = re.search(rb"stream\r?\n", body)
     if not m:
         return None
+    head = body[:m.start()]
     end = body.find(b"endstream", m.end())
     if end < 0:
         raise PDFError("unterminated stream")
     raw = body[m.end():end]
-    if raw.endswith(b"\r\n"):
+    # /Length is authoritative, and stripping a trailing line ending instead is
+    # wrong: a compressed stream may itself end with 0x0A or 0x0D, and eating
+    # that byte leaves zlib an "incomplete or truncated stream". Measured on
+    # this artifact -- one Flate stream in a 230 KB PDF ends with 0x0A, which
+    # made this extractor refuse a PDF typst had written correctly.
+    mlen = re.search(rb"/Length\s+(\d+)(?!\s+\d+\s+R)", head)
+    if mlen:
+        n = int(mlen.group(1))
+        if 0 <= n <= len(raw):
+            raw = raw[:n]
+    elif raw.endswith(b"\r\n"):
         raw = raw[:-2]
     elif raw.endswith(b"\n"):
         raw = raw[:-1]
-    if b"/FlateDecode" in body[:m.start()]:
+    if b"/FlateDecode" in head:
         return zlib.decompress(raw)
     return raw
 

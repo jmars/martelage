@@ -1,0 +1,26 @@
+vector: 37-self-seal
+what:   the operator sealed the package with its own key. §9.3 limit (i): "a seal made
+        with the operator's own key is worthless against the operator, because they
+        hold the key". The seal is technically perfect — it verifies, it chains, it
+        covers the bytes, the timestamp verifies — and it proves nothing about the
+        party it is supposed to be evidence against
+run:    validator/p3-verify --container vectors/37-self-seal/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/37-self-seal/pkg
+exit:   1
+also:   validator/p3-verify --container vectors/37-self-seal/seal.asice \
+          --trust-anchors vectors/pki/anchors vectors/37-self-seal/pkg   ->  exit 3
+        the same container with --operator-cert withheld: the clause is then
+        undecided and the verifier says so rather than assuming the signer is
+        someone else. A verifier that assumed would report this package CONFORMANT
+must print:
+  - "the seal was made with the OPERATOR's own key"
+  - "A seal made with the operator's own key is worthless against the operator"
+  - "§9.3 limit i"
+requirements exercised: MA-64, MA-70, MA-74, §9.3 limit (i)
+why it fails without the fix: MEASURED. In a copy of the verifier with the operator
+        comparison removed, this container reports CONFORMANT (exit 0), and that copy
+        still reports 0 on vector 34 — so the mutation removes this check and nothing
+        else. The comparison is on the SubjectPublicKeyInfo, so re-issuing the
+        operator's certificate under another subject does not evade it

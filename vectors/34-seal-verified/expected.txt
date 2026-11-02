@@ -1,0 +1,36 @@
+vector: 34-seal-verified
+what:   a package whose anchor slot claims p3-eidas-qualified-seal-asic-e (§9.3), sealed
+        in an ASiC-E container by a certificate for a legal person OTHER than the
+        operator, carrying an RFC 3161 token. All three P3 inputs are armed:
+        --container, --trust-anchors, --operator-cert. This is the arm in which every
+        check the profile specifies can reach a verdict, so it is the baseline every
+        other P3 vector is measured against — and the control the mutation table in
+        README.md re-runs to show each mutant removes one check and nothing else
+run:    validator/p3-verify --container vectors/34-seal-verified/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/34-seal-verified/pkg
+exit:   0
+also:   validator/p3-verify --container vectors/34-seal-verified/seal.asice \
+          --trust-anchors vectors/pki/anchors vectors/34-seal-verified/pkg   ->  exit 3
+        the same container with --operator-cert withheld: the "legal person other
+        than the operator" clause is then undecided, not assumed, so the run cannot
+        pass (measured: 1 undecided input, "does not assume the signer is someone
+        else")
+        sh validator/martelage-verify vectors/34-seal-verified/pkg   ->  exit 3
+        the base validator stops at the profile it is not, naming a signature
+        verifier and trust anchors — which is this tool
+must print:
+  - "VERIFIED — profile 'p3-eidas-qualified-seal-asic-e'"
+  - "present and VERIFIED against"
+  - "genTime"
+  - "checked: the signer's public key differs from the operator's"
+  - "NOT checked by any run of this verifier — no CRL is read, no OCSP responder is contacted"
+  - "reported present or absent only"
+  - "A package proves that what it contains was not altered after it left"
+  - "A coherent tamper performed before the first observation is invisible"
+requirements exercised: MA-61 (rule e), MA-64, MA-70, MA-71, MA-74
+why it fails without the fix: the base validator cannot decide this package at all —
+        it reports CANNOT DECIDE (exit 3) because it has no signature verification,
+        so before this vector the P3 profile had no arm that could reach exit 0. The
+        asymmetry is 3 (base validator) against 0 (this verifier) on the same package

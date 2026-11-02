@@ -1,0 +1,36 @@
+vector: 35-seal-digest-moved
+what:   the seal is cryptographically valid and the package has moved under it.
+        pkg-moved is internally consistent: one byte of notes.md was flipped and
+        package.json's own files[] digest was recomputed, so nothing in the package
+        contradicts anything else in it. What it is no longer is the package that was
+        sealed. This is the failure P3 exists to catch — a valid seal over other
+        bytes — and the only instrument that can see it is the one comparing the
+        digests the signature covers against the files as they are on disk
+run:    validator/p3-verify --container vectors/35-seal-digest-moved/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/35-seal-digest-moved/pkg-moved
+exit:   1
+also:   validator/p3-verify --container vectors/35-seal-digest-moved/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/35-seal-digest-moved/pkg   ->  exit 0
+        the SAME container against the package it was made over: nothing else
+        differs, so the exit code is decided by the moved bytes and by nothing else
+        sh validator/martelage-verify vectors/35-seal-digest-moved/pkg-moved -> 3,
+        and it reports NO refusal: every digest in pkg-moved agrees with every byte in
+        pkg-moved, so the base tier has nothing to refuse and stops at the profile it
+        is not. It cannot tell pkg from pkg-moved — both exit 3, both with an empty
+        refusals section. Only the seal can tell them apart
+must print:
+  - "no longer matches the digest the seal covers"
+  - "The seal is valid and describes other bytes"
+  - "sealed "
+  - "on disk "
+requirements exercised: MA-61 (rule e), MA-64, MA-70, MA-73
+why it fails without the fix: MEASURED. In a copy of the verifier whose sealed-digest
+        comparison is replaced by an unconditional match (the digests then checked
+        only against the ZIP entries, never against the package on disk), this vector
+        reports CONFORMANT, exit 0 — and that copy still reports 0 on vector 34, so
+        the mutation removes this check and nothing else. The asymmetry is the same
+        container over two packages one byte apart: 0 against 1

@@ -1,0 +1,26 @@
+vector: 46-zip-duplicate
+what:   a container whose ZIP holds TWO entries named notes.md. The first carries shadowed-notes.md
+        (one byte different from the sealed file), the second carries the bytes the ASiC manifest
+        and the seal state. zipfile.read() returns the LAST entry, so the pre-fix verifier
+        compared the sealed copy and printed "match" while the container also held bytes that
+        nothing covers; a first-wins extractor writes those other bytes. The container says
+        nothing about which copy is the evidence, so no coverage claim about that name can be true.
+run:    validator/p3-verify --container vectors/46-zip-duplicate/seal-duplicate-entry.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/46-zip-duplicate/pkg
+exit:   1
+also:   validator/p3-verify --container vectors/34-seal-verified/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem vectors/34-seal-verified/pkg ->  exit 0
+        the CONTROL: the same package sealed without the shadowed entry.
+must print:
+  - "the ZIP holds 2 entries named 'notes.md'"
+  - "a duplicate entry name makes the container's content depend on which reader opens it"
+  - "no coverage claim about that name can be true"
+requirements exercised: MA-64
+why it fails without the fix: MEASURED. In the pre-fix copy this container reports exit 0
+        CONFORMANT and its coverage line claims no entry sits outside the manifest's coverage —
+        false for the shadowed copy, whose sha256 is 2bae9d6e95376029d8c8a9d133566964fdd0da8c09023e6327ab6fbb1c9284dd against the sealed 798dab2402394de24954a4e5d0b8c806d8185ac2e54a95ec3ef22e1aeeba807f. The
+        reverse order (shadow last) is the safe direction and already exited 1 before the fix.
+        The control reports exit 0 both before and after.

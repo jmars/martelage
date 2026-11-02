@@ -1,0 +1,26 @@
+vector: 47-manifest-path-escape
+what:   an ASiC manifest whose covered path leaves the package. outside.txt sits BESIDE the package
+        directory and the manifest lists '../outside.txt' with its real digest, so the seal covers
+        bytes the package does not contain. os.path.join(package, rel) follows the '..' straight
+        out of the package, reads that file and prints "match" — a coverage claim about a file that
+        is not in the package, made in the same table as the files that are.
+run:    validator/p3-verify --container vectors/47-manifest-path-escape/seal-path-escape.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/47-manifest-path-escape/pkg
+exit:   1
+also:   validator/p3-verify --container vectors/34-seal-verified/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem vectors/34-seal-verified/pkg ->  exit 0
+        the CONTROL: the same package and the same construction, no escaping entry.
+must print:
+  - "covers '../outside.txt', which is a path containing '..'"
+  - "a covered path names a file inside the package"
+  - "the coverage claim is false for them"
+requirements exercised: MA-64
+why it fails without the fix: MEASURED. In the pre-fix copy this container reports exit 0
+        CONFORMANT with a files table row "../outside.txt … match", having read and hashed a file
+        outside the package. The same predicate refuses an absolute covered path and a path that
+        resolves outside through a symlink; MEASURED on a copy built with
+        --manifest-entry /etc/hostname=… (an absolute path): exit 0 before the fix, exit 1 after,
+        refused as "an absolute path". The control reports exit 0 both before and after.

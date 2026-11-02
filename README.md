@@ -26,7 +26,9 @@ reader cannot credit the weakest layer with the strength of the strongest.
 |---|---|
 | `spec/MARTELAGE-0.1.md` | the standard. Every normative requirement carries an identifier (`MA-1` … `MA-82`) so a conformance report can cite it. |
 | `validator/martelage-verify` | the reference validator: POSIX shell + the set §10.1 names (`awk`, `sed`, `grep`, `cmp`, `sort`, `sha256sum`, `tr`, `cut`, `head`, `tail`, `wc`, `find`, `mktemp`, `rm`, `cat`). No network, no interpreter beyond those, no keys, no service, no producer. |
-| `vectors/` | thirty-three hand-made packages with their expected results. Constructed for the standard; none is exported from a producer system. |
+| `validator/p3-verify` | the P3 profile verifier (§9.3 `p3-eidas-qualified-seal-asic-e`): python3 and the `openssl` binary, no third-party library and no network path. Verifies an ASiC-E container's CAdES seal, **every signer of every signature entry** and the whole chain each one reaches, the digests it covers, and an RFC 3161 token with the TSA's own chain — and prints what it cannot check on every run. A second implementation: `martelage-verify` keeps its zero-dependency property untouched. |
+| `tools/` | `mkpki.sh` (the throwaway test PKI), `mkasic.py` (the ASiC-E container builder), `mkp3.sh` (rebuilds the P3 vectors), and the two scripts that render the site's print artifact. |
+| `vectors/` | forty-seven hand-made packages and their fixtures, with their expected results. Constructed for the standard; none is exported from a producer system. |
 | `LICENSE` | the licence split: specification text CC BY 4.0, code Apache-2.0. |
 
 The standard is published on its own. It defines concepts — a record envelope, a stream, a package
@@ -43,13 +45,15 @@ ledger held by someone else, whose stated digest the base validator compares to 
 match still leaving inclusion undecided, so it reports exit 3; and
 `p3-eidas-qualified-seal-asic-e` — an ETSI EN 319 162-1 ASiC-E container holding the package files
 with a CAdES or XAdES signature by a legal person other than the operator, with a qualified electronic
-time stamp and optional long-term validation. **P3 is specified, not built:** the base validator
-cannot verify a signature — that needs a signature verifier and trust anchors — so it stops at exit
-code 3 and names the profile-specific verifier it is not, and this repository ships no signature
-verifier, no ASiC-E implementation and no eIDAS certification. §9.3 requires three limits to be stated
-wherever P3 is offered; [the anchor profiles section of the site](site/usage.html#anchors) states them
-in full, the first being that a seal made with the operator's own key is worthless against the
-operator, because they hold the key.
+time stamp and optional long-term validation. **P3 is built, and it is not the base validator that
+builds it:** the base validator cannot verify a signature — that needs a signature verifier and trust
+anchors, which §9.1(b) keeps out of the base tier — so it still stops at exit code 3 and names the
+profile-specific verifier it is not. That verifier is [`validator/p3-verify`](validator/p3-verify),
+which verifies the seal and prints what it cannot check (see [The P3 verifier](#the-p3-verifier)
+below). No eIDAS certification is claimed for it and no compliance with ETSI EN 319 162-1 is claimed
+for it. §9.3 requires three limits to be stated wherever P3 is offered; [the anchor profiles section
+of the site](site/usage.html#anchors) states them in full, the first being that a seal made with the
+operator's own key is worthless against the operator, because they hold the key.
 
 ## Running the validator
 
@@ -68,6 +72,97 @@ Exit codes are the gate, not the tail of the output:
 | `3` | **CANNOT DECIDE** — an input the validator needs to decide is absent (anchor evidence, trust anchors, a profile-specific verifier). It names the missing input. |
 
 Code 3 exists because an instrument that cannot return "undecided" returns something else instead.
+
+## The P3 verifier
+
+`validator/p3-verify` is the profile-specific verifier §9.3 says a P3 claim needs. It is a **second
+implementation**: it shares no code with `martelage-verify`, which is unchanged, and it runs under
+`python3` and shells out to the `openssl` binary for every cryptographic operation — python's standard
+library has no CMS or X.509 implementation, and there is no third-party crypto library on this host.
+It reads no CRL, contacts no OCSP responder and has no network path at all.
+
+```sh
+validator/p3-verify \
+  --container vectors/34-seal-verified/seal.asice \
+  --trust-anchors vectors/pki/anchors \
+  --operator-cert vectors/pki/operator.crt.pem \
+  vectors/34-seal-verified/pkg                      # exit 0
+```
+
+| input | what arming it buys (§10.2 MA-69) |
+|---|---|
+| `PACKAGE-DIR` | the package the seal claims to bind. It must claim the P3 profile; handed a package that claims another profile, the tool says so and exits 2 |
+| `--container FILE` | the ASiC-E container — the evidence itself. Without it the seal is CANNOT DECIDE, not refused |
+| `--trust-anchors DIR` | a directory of PEM anchors: what the signer's chain is checked against |
+| `--operator-cert FILE` | the operator's own certificate, so that "a legal person OTHER than the operator" (§9.3 limit i) is *checked* rather than assumed — over **every** signer of every signature entry, because the operator only has to be one of them. Without it that clause is CANNOT DECIDE: this verifier never assumes the signer is someone else |
+| `--require-timestamp` | refuse a container that carries no RFC 3161 token |
+
+Exit codes are the same four the standard defines (§10.3 MA-70), with P3's meanings:
+
+| code | meaning |
+|---|---|
+| `0` | **CONFORMANT** — the container is well-formed (no duplicate entry name, every covered path inside the package), the CAdES signature verifies over the ASiC manifest, every signer of every signature entry chains to a supplied anchor and none is a CA, every sealed digest is the package's, the token verified, every certificate the run established (every signer, the whole chain, the TSA's chain) was valid at the claimed time, and no signer's key is the operator's |
+| `1` | **NON-CONFORMANT** — a malformed container (a wrong `mimetype`, a duplicate ZIP entry name, a covered path that leaves the package), a sealed digest that moved, a signature that does not verify, a signer that is a CA, any signer or chain certificate that was not valid at the claimed time, a token from a TSA that was not, a seal made with the operator's own key **or co-signed with it**, or `--require-timestamp` given with no token |
+| `2` | **USAGE OR UNREADABLE** — a bad invocation, an unreadable input, or a package that does not claim P3 |
+| `3` | **CANNOT DECIDE** — an input was not supplied: the container, trust anchors, `--operator-cert`, or a verified timestamp to establish the claimed time |
+
+**What it verifies**, in the order it verifies it: that the ZIP is an ASiC-E (a correct `mimetype`
+present, first and stored; an ASiC manifest under `META-INF/`; a `META-INF/signatures*.p7s`) and that
+**no entry name appears twice** — a duplicate name makes the container's content depend on which
+reader opens it, so the coverage claim cannot be true for that name; that every entry the manifest
+lists is present with the digest it states, that **every covered path stays inside the package** (no
+absolute path, no `..`, nothing that resolves out), and that no entry sits outside the manifest's
+coverage while claiming to be evidence; that the CAdES signature verifies over the exact bytes of
+`META-INF/manifest.xml` (`openssl cms -verify`, DER, `-binary`) and that **every signer of every
+signature entry** chains to a supplied anchor — the signer set is enumerated from openssl's `-signer`
+output and held against the entry's own signerInfo count, so a co-signer cannot go unchecked; that no
+signer is a **CA** (a certificate with `basicConstraints CA:TRUE` is refused as a sealing party); that
+every digest the seal covers is the digest of the package file as it is on disk; that an RFC 3161
+token, if present, verifies over one of the signature values (`openssl ts -verify`) and that the time
+it establishes is the time **every certificate date is checked against** — every signer, every
+certificate in the chain each signer reaches, and the timestamping authority's own chain, at the
+token's genTime and never at this host's clock; and that **no** signer's public key is the
+operator's.
+
+**What it does not check, on any run.** Every run prints a section headed `not checkable by this
+verifier (every run)` before its verdict: revocation (no CRL is read and no OCSP responder is
+contacted — there is no network path in the tool, so "valid at the claimed time" means the certificate
+dates and never revocation status); long-term validation (LTV material is reported present or absent
+and is never validated); the truth and completeness of the records (§9.3 limit iii); the signer's legal
+identity beyond the subject its certificate claims; whether the certificate was issued for sealing at
+all (this standard defines no key-usage profile for a seal, so the chain is verified with `-purpose
+any`, and that is stated rather than assumed — the CA bit is the one key-usage-shaped property that
+*is* checked, because a CA is not a sealing party); and a re-forged history (§9.3 limit ii). The block
+is printed on exit-2 runs too, to stderr, so "on every run" is true of the runs that have no report as
+well. A run that could not check something never reads as having checked it, and a check it did not
+arm is printed as unarmed rather than as a pass (§10.4 item 6, MA-71).
+
+**What this is not.** Not a qualified trust service, not an eIDAS certification, and not a claim of
+compliance with ETSI EN 319 162-1. The container shape it verifies is the manifest-signature form — a
+detached CAdES over `META-INF/manifest.xml`, carrying the covered files' digests in that manifest —
+and the tool says so in its own report, because the EN 319 162-1 multi-file concatenated-digest form
+is not what it parses and it will not report that as verified. It does not verify XAdES; it does not
+make `martelage-verify` verify seals, and a P3 claim handed to the base validator still reports exit 3.
+
+### The P3 fixtures, and how to rebuild them
+
+`vectors/pki/` is a **throwaway** test PKI: two roots, an intermediate, a sealer (`CN=Witness AG`), a
+second sealer under the root the vectors withhold, a sealer whose certificate expired in 2021, a
+second sealer under the same intermediate as the first (the two-signer control), an intermediate and a
+TSA certificate with the same keys and subjects as the valid ones but expired in 2021, the operator
+(`CN=Operator GmbH`) and a timestamping authority. **The private keys are committed on
+purpose** — a vector that cannot be rebuilt from what is in the tree is not reproducible — and they
+are worth exactly nothing; see [`vectors/pki/README.md`](vectors/pki/README.md). Validity dates are
+fixed with `-not_before`/`-not_after`, so the expired-signer vector is expired on any host at any time;
+key material is regenerated on every run, so regenerating the PKI means rebuilding the containers:
+
+```sh
+sh tools/mkpki.sh      # the test PKI: new keys, the same dates and layout
+sh tools/mkp3.sh       # vectors 34..47: the packages and their containers
+```
+
+Both run offline and need only `openssl` and `python3`. `tools/mkasic.py` is the container builder,
+and its docstring states the container shape it produces.
 
 ## The vectors, with expected and actual results
 
@@ -119,9 +214,39 @@ same thing, plus the requirement identifiers the case exercises.
 | 32 | `32-seam-writers` | two writers over ONE body at seq 1 — the finding must name both writers and the sequence | 0 + 1 finding | **0 + 1 finding** |
 | 32b | `32` `pkg-longer` | the same body at a different seq: the finding names seq 2 and which file holds no record there | 0 + 1 finding | **0 + 1 finding** |
 | 33 | `33-scope-printed` | the scope section printed in full, every `not_contains` entry with its meaning word | 0 | **0** |
+| 34 | `34-seal-verified` | a P3 seal that verifies fully, with a checked RFC 3161 token, a supplied anchor and the operator's certificate | 0 | **0** |
+| 34b | `34` without `--operator-cert` | the same container: the "legal person other than the operator" clause is undecided, not assumed | 3 | **3** |
+| 34c | `34` through the base validator | the base validator stops at the profile it is not | 3 | **3** |
+| 35 | `35-seal-digest-moved` | a valid seal over a package that moved under it — `pkg-moved` is internally consistent | 1 | **1** |
+| 35b | `35` against the sealed package | the same container, the package it was made over | 0 | **0** |
+| 36 | `36-anchor-untrusted` | the seal chains to no supplied anchor: CANNOT DECIDE, not a refusal | 3 | **3** |
+| 36b | `36` with `--trust-anchors vectors/pki/anchors-b` | the same container with root B supplied | 0 | **0** |
+| 37 | `37-self-seal` | the operator sealed with its own key — §9.3 limit (i) | 1 | **1** |
+| 37b | `37` without `--operator-cert` | the same container: the clause is undecided | 3 | **3** |
+| 38 | `38-no-timestamp` + `--require-timestamp` | a container with no token, refused because the run required one | 1 | **1** |
+| 38b | `38` without `--require-timestamp` | nothing refused; no verified time, so the date check is unreachable | 3 | **3** |
+| 39 | `39-container-malformed` `seal-bad-mimetype` | a `mimetype` of `application/zip` | 1 | **1** |
+| 39b | `39` `seal-missing-entry` | the ASiC manifest lists an entry the ZIP does not hold | 1 | **1** |
+| 40 | `40-signer-expired` | the signer's certificate expired in 2021, at a claimed time of now | 1 | **1** |
+| 41 | `41-signature-broken` | the ASiC manifest altered after signing, every stated digest intact | 1 | **1** |
+| 41b | `41`'s container before the manifest was touched | vector 34's container | 0 | **0** |
+| 42 | `42-multisigner-operator` | the operator's key as a SECOND signer behind a valid signer — §9.3 limit (i) with the operator one certificate further along | 1 | **1** |
+| 42b | `42` `seal-two-signers.asice` | the same two-signer construction with a second sealer, no operator | 0 | **0** |
+| 43 | `43-ca-signer` | a CA certificate (`basicConstraints CA:TRUE`) used as the sealing party | 1 | **1** |
+| 44 | `44-chain-expired` | the signer is valid and the intermediate it chains through expired in 2021 | 1 | **1** |
+| 45 | `45-tsa-expired` | a token from a TSA certificate that expired in 2021 | 1 | **1** |
+| 46 | `46-zip-duplicate` | two ZIP entries named `notes.md`; the covered digest is the last one's, the shadowed bytes are the first one's | 1 | **1** |
+| 47 | `47-manifest-path-escape` | the ASiC manifest covers `../outside.txt`, a file beside the package | 1 | **1** |
 
 11b is the residual of §7.4.3 in one line: without the predecessor, a dropped record is invisible,
 and the validator says the layer was not armed rather than implying a pass.
+
+Rows 34–47 are the P3 vectors, and they are the first ones run against `validator/p3-verify` rather
+than `martelage-verify`. Each pair is built so that the two arms differ by exactly one thing — the
+container, the anchor directory, one flag, one key, one byte — so the exit code is decided by the
+check under test and by nothing else. Row 35 is the one that shows what the profile buys: the sealed
+package and `pkg-moved` are both internally consistent, both report no refusal from the base validator,
+and only the seal can tell them apart.
 
 Vectors 13–25 were added after a review of this repository found requirements the text specified and
 the reference validator did not enforce. Each one is a package built to trip exactly one of those
@@ -214,17 +339,47 @@ not: the first row is vector 04's own "must print" line, and vector 23b shows th
 package that is refused *and* undecided reports exit 1, and still names the input it could not
 check, because a refusal must not make an undecided check invisible (MA-71).
 
+### The P3 checks have mutants too
+
+Same method against `validator/p3-verify`: copy it, remove exactly the check under test, run the
+vector built for it, and confirm the mutant still passes vector 34 — the arm where every check is
+armed and every check passes. Measured on this tree:
+
+| check removed from a copy of `p3-verify` | vector | fixed | mutant | control (34) |
+|---|---|---|---|---|
+| the sealed digest is compared to the package on disk | 35 | 1 | **0** | 0 |
+| the signer's key is compared to `--operator-cert` | 37 | 1 | **0** | 0 |
+| the signature value is checked (openssl `-nosigs`) | 41 | 1 | **0** | 0 |
+| the certificate window is checked at the claimed time | 40 | 1 | **0** | 0 |
+| `--require-timestamp` is read | 38 | 1 | **3** | 0 |
+| the `mimetype` is compared | 39 | 1 | **0** | 0 |
+| a chain failure is reported as undecided, not as a refusal | 36 | 3 | **1** | 0 |
+| the operator exclusion is made over EVERY signer, not the first | 42 | 1 | **0** | 0 |
+| a signer certificate that is a CA is refused | 43 | 1 | **0** | 0 |
+| every certificate in the chain is date-checked at the claimed time | 44 | 1 | **0** | 0 |
+| the TSA's own chain is date-checked at the claimed time | 45 | 1 | **0** | 0 |
+| a duplicate ZIP entry name is refused | 46 | 1 | **0** | 0 |
+| a covered path that leaves the package is refused | 47 | 1 | **0** | 0 |
+
+The `-nosigs` row is the one that matters most: it is a copy in which `openssl cms -verify` parses the
+SignedData, finds the signer, builds the chain and does not check the signature — and vector 41 then
+passes. The signature check is load-bearing, and `--debug` prints the exact command that performs it.
+
 ## The validator runs on a second shell and a second awk
 
 The whole vector suite above was re-run under `busybox sh` with `busybox awk`, `sed`, `grep`, `cmp`
 and `sha256sum` — a different shell and a different awk implementation from the ones used for the
-table. All 44 invocations (33 vector runs plus the 11 documented second arms) return the same exit
-code, and 43 of 44 produce byte-identical stdout and stderr. The exception is measured and named:
+table. All 44 invocations of `martelage-verify` (33 vector runs plus the 11 documented second arms) return
+the same exit code, and 43 of 44 produce byte-identical stdout and stderr. The exception is measured and named:
 vector 16, a NUL byte inside a record body, is refused by both awks (exit 1) with different refusal
 text, because `busybox awk` and `gawk` split a NUL-bearing line differently. That is a difference
 between two awks' handling of a byte no conformant package may carry, not a difference in the
 verdict. That is what "POSIX shell and coreutils" is supposed to mean, so it was measured rather than
 asserted.
+
+That claim is about `martelage-verify` and stops there: `p3-verify` is 27 further invocations under
+`python3` and the `openssl` binary, which is a different dependency class and is not offered as a
+POSIX-shell result.
 
 ## A producer that shares no code with the validator
 

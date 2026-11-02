@@ -1,0 +1,31 @@
+vector: 44-chain-expired
+what:   the signer is valid and the certificate it chains THROUGH expired on 2021-01-01.
+        intermediateA-expired carries the same key and the same subject as intermediateA and a
+        window that ended in 2021, so the chain openssl builds reaches root A and every signature
+        verifies; only the calendar is against it. The chain was verified with -no_check_time, so
+        this is exactly the question the date check has to answer — over the whole chain.
+run:    validator/p3-verify --container vectors/44-chain-expired/seal-expired-intermediate.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/44-chain-expired/pkg
+exit:   1
+also:   validator/p3-verify --container vectors/34-seal-verified/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem vectors/34-seal-verified/pkg ->  exit 0
+        the CONTROL: the same signer, the same construction, carrying intermediateA (window
+        2020-01-01 .. 2099-01-01) instead of the expired certificate of the same key and subject.
+        The dates are fixed in tools/mkpki.sh, so this vector is expired at the claimed time on
+        any host, at any time, forever.
+must print:
+  - "the chain established for META-INF/signatures.p7s does not hold at the claimed time"
+  - "CN=martelage test intermediate A"
+  - "window 2020-01-01 00:00:00Z .. 2021-01-01 00:00:00Z"
+  - "was expired then"
+  - "Every certificate in the chain is checked at the claimed time, not only the signer's"
+requirements exercised: MA-64, MA-70
+why it fails without the fix: MEASURED. In the pre-fix copy this container reports exit 0
+        CONFORMANT: the signature verifies, the chain reaches root A with -no_check_time, the
+        token verifies, the signer leaf's own window contains the claimed time, and no check
+        ever looked at the intermediate. The report's "valid now no (informational only)" line
+        is the only trace, and an informational line is not a check. The control reports exit 0
+        both before and after.

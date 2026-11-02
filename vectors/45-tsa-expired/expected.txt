@@ -1,0 +1,25 @@
+vector: 45-tsa-expired
+what:   a token from a timestamping authority whose certificate expired on 2021-01-01. The seal,
+        its chain, its signer and its digests are exactly vector 34's; only the TSA certificate's
+        window differs (tsa-expired has the same key and subject as tsa). A token whose signer was
+        not valid at the time it stamps establishes no time this run may rely on — and the time it
+        states is the time every certificate date is checked against.
+run:    validator/p3-verify --container vectors/45-tsa-expired/seal-expired-tsa.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/45-tsa-expired/pkg
+exit:   1
+also:   validator/p3-verify --container vectors/34-seal-verified/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem vectors/34-seal-verified/pkg ->  exit 0
+        the CONTROL: the same construction stamped by the valid TSA certificate.
+must print:
+  - "the timestamping authority's certificate CN=martelage test TSA"
+  - "window 2020-01-01 00:00:00Z .. 2021-01-01 00:00:00Z"
+  - "was expired at the time the token establishes"
+  - "a token whose signer was not valid then does not establish that time"
+requirements exercised: MA-64, MA-70
+why it fails without the fix: MEASURED. In the pre-fix copy this container reports exit 0 with
+        "present and VERIFIED against …" for the timestamp: the token was verified with
+        `openssl ts -verify -no_check_time` and the TSA's own certificate was never date-checked
+        at all. The control reports exit 0 both before and after.

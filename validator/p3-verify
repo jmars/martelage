@@ -1,0 +1,1541 @@
+#!/usr/bin/env python3
+"""p3-verify — the MARTELAGE-0.1 verifier for the P3 anchor profile.
+
+  profile wire string: p3-eidas-qualified-seal-asic-e   (spec §9.3)
+
+This is a SECOND implementation, not a replacement: validator/martelage-verify
+keeps its zero-dependency property (POSIX shell + the §10.1 tool list) and is
+unchanged by this file. p3-verify needs a signature verifier and trust anchors,
+which the base tier does not and must not have (§9.1b, §10.1). It therefore runs
+under python3 and shells out to the `openssl` binary for every cryptographic
+operation: python's standard library has no CMS or X.509 implementation, and
+`openssl cms` / `openssl ts` / `openssl x509` are the ones this host has.
+
+What it verifies (§9.3 P3):
+  * the container is an ASiC-E: a ZIP with a correct `mimetype`, an ASiC
+    manifest under META-INF/, and a CAdES signature entry, and no entry name
+    twice — a duplicate name makes the content depend on which reader opens it;
+  * every entry the ASiC manifest lists is present with the digest it states,
+    every covered path stays inside the package (no absolute path, no '..', no
+    symlink out), and no entry sits outside the manifest's coverage while
+    claiming to be evidence;
+  * the CAdES signature over META-INF/manifest.xml verifies, and EVERY signer
+    of EVERY signature entry chains to a supplied trust anchor — the signer set
+    is enumerated and held against the signerInfo count, so a co-signer cannot
+    go unchecked;
+  * no signer is a CA: a certificate with basicConstraints CA:TRUE is refused as
+    a sealing party;
+  * the digests the seal covers are the digests of the package files as they
+    are on disk — a cryptographically valid seal over files that have moved is
+    the failure P3 exists to catch;
+  * an RFC 3161 token, if present, verifies against the anchors over one of the
+    signature values, and the time it establishes is the time EVERY certificate
+    date is checked against: every signer, every certificate in the chain each
+    signer reaches, and the timestamping authority's own chain;
+  * NO signer is the operator — every signer of every entry is compared against
+    --operator-cert, and one of them being the operator refuses the container
+    (§9.3 limit i).
+
+What it does NOT verify, on any run, and says so in its own output (§10.7):
+revocation (no CRL is read and no OCSP responder is contacted, ever), long-term
+validation (LTV material is reported present or absent, never validated), the
+truth or completeness of the records (§9.3 limit iii), the signer's legal
+identity beyond what the certificate claims, and the signer's key usage beyond
+the CA bit (this standard defines no key-usage profile for a seal).
+
+exit: 0 CONFORMANT | 1 NON-CONFORMANT | 2 USAGE/UNREADABLE | 3 CANNOT DECIDE
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import zipfile
+import xml.etree.ElementTree as ET
+
+PROG = "p3-verify"
+PROFILE = "p3-eidas-qualified-seal-asic-e"
+MIMETYPE = "application/vnd.etsi.asic-e+zip"
+ASIC_MANIFEST = "META-INF/manifest.xml"
+ASIC_TIMESTAMP = "META-INF/timestamp.tst"
+
+# §3.3, printed verbatim by every run that names a package — the same two
+# sentences, word for word, as validator/martelage-verify prints them.
+RESID1 = ("  A package proves that what it contains was not altered after it left; it cannot prove that what it "
+          "contains is all there was, and against an operator who rewrote everything before the first anchor it "
+          "proves nothing.")
+RESID2 = ("  A coherent tamper performed before the first observation is invisible to every mechanism in this "
+          "standard.")
+
+# §10.7, plus the three limits that travel with P3 (§9.3). Printed on every run,
+# under its own heading, because a check this verifier cannot perform must never
+# read as one it performed.
+NOT_CHECKABLE = [
+    ("revocation", "no CRL is read and no OCSP responder is contacted, by this verifier or by any run of it: there "
+                   "is no network path in this tool at all. A chain established here is established by signature "
+                   "and by certificate date only. 'Valid at the claimed time' below means the dates, never "
+                   "revocation status."),
+    ("long-term validation", "LTV material is reported present or absent and is never validated. A container "
+                             "carrying archival timestamps or validation material is reported as carrying it, "
+                             "which is not a statement that it validates (§9.3)."),
+    ("truth and completeness", "whether the sealed records are TRUE, and whether the package is COMPLETE — all "
+                               "that ever existed. A qualified seal is a presumption about integrity and origin, "
+                               "not a technical guarantee of truth (§9.3 limit iii), and it is kept distinct from "
+                               "the residual below."),
+    ("the signer's legal identity", "who the signer really is, beyond the subject its certificate claims. This "
+                                    "verifier reads that claim and compares keys; it does not establish that the "
+                                    "named legal person exists, or that it, and not someone holding its key, "
+                                    "made the seal."),
+    ("the signer's key usage", "whether the signer's certificate was issued for sealing at all: this standard "
+                               "defines no key-usage profile for a seal, so the chain is verified with openssl's "
+                               "purpose check disabled (`-purpose any`) and that is stated rather than assumed. "
+                               "A certificate that is itself a CA (basicConstraints CA:TRUE) IS refused as a "
+                               "signer — that much is checked — but no key-usage bit is required of a signer."),
+    ("a re-forged history", "a single seal does not stop a re-forged history — the operator can doctor a package "
+                            "and have THAT sealed. What defeats it is custody of prior packages by the other "
+                            "party, so the seal multiplies the chain and does not replace it (§9.3 limit ii)."),
+]
+
+
+class Refuse(Exception):
+    """a check failed: the evidence contradicts the claim (exit 1)"""
+
+
+def sha256_bytes(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def cert_date(text, key):
+    m = re.search(r"^%s=(.+)$" % key, text, re.M)
+    return m.group(1).strip() if m else None
+
+
+ISO = "%Y-%m-%d %H:%M:%SZ"
+HUMAN = "%b %d %H:%M:%S %Y GMT"
+
+
+def parse_date(s):
+    if not s:
+        return None
+    import datetime
+    for fmt in (ISO, HUMAN):
+        try:
+            return datetime.datetime.strptime(s, fmt).replace(tzinfo=datetime.timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+class Verifier:
+    def __init__(self, args):
+        self.a = args
+        self.tmp = tempfile.mkdtemp(prefix="p3-verify.")
+        self.refusals = []
+        self.findings = []
+        self.undecided = []
+        self.ignored = []
+        self.debug = []
+        self.report = []
+        self.openssl = os.environ.get("OPENSSL") or "openssl"
+        self.claims = {}
+        self.mf = {}
+        self.pkdigest = None
+        self.covered = {}
+        # one entry per signature entry: EVERY signer openssl yields, in order.
+        # A dict of lists, not of one certificate: the blocker this replaced
+        # compared the first signer of the first entry and called that "the
+        # signer", so a co-signer escaped every check made over it.
+        self.signer_certs = {}
+        self.signer_files = {}
+        self.chain_files = {}
+        self.chain_all = {}
+        self.chain_reached = {}
+        self.chain_show = {}
+        self.sig_paths = {}
+        self.anchor_certs = []
+        self.anchors_bundle = None
+        self.tokpath = None
+        self.tsa_cert_files = []
+        self.tsa_all_path = None
+        self.tsa_certs = []
+        self.ts_sig = None
+        self.ts_sigpath = None
+        self.tsa_cert = None
+        self.claimed_time = None
+        self.ts_state = "absent"
+        self.ts_time_text = None
+        self.ts_tsa = None
+        self.anchor_how = None
+        self.anchor_reached = None
+        self.valid_now = None
+        self.mime_state = "not read"
+        self.mfdigest = "<absent>"
+        self.mfpath = None
+        self.ltv_state = "absent — reported, never validated"
+        self.operator_state = "NOT checked — --operator-cert was not supplied"
+        self.date_state = "not reached"
+        self.layer = {}
+
+    # ── plumbing ──────────────────────────────────────────────────────────
+    def refuse(self, text):
+        self.refusals.append(text)
+
+    def finding(self, text):
+        self.findings.append(text)
+
+    def cannot_decide(self, text):
+        self.undecided.append(text)
+
+    def out(self, text=""):
+        self.report.append(text)
+
+    def phase(self, key, fn, *a, label="checked"):
+        """run one check and record whether the layer it belongs to reached a
+        verdict. A layer that produced a refusal never reads as checked."""
+        before = len(self.refusals)
+        fn(*a)
+        self.layer[key] = "REFUSED — see refusals" if len(self.refusals) > before else label
+
+    def openssl_run(self, argv, cwd=None, label=""):
+        """Run the openssl binary and record exactly what was run (§10.4: the
+        report must show what the run checked; --debug shows the commands)."""
+        cmd = [self.openssl] + argv
+        proc = subprocess.run(cmd, cwd=cwd, capture_output=True)
+        self.debug.append("  %s%s   -> exit %d%s" % (
+            "$ " if not cwd else "(cd %s) " % cwd,
+            " ".join(cmd), proc.returncode,
+            "" if not label else "   # " + label))
+        return proc
+
+    def errline(self, proc):
+        """openssl's own words, one line, so a refusal carries its evidence.
+        openssl's first line is only the headline ("CMS Verification failure");
+        the reason is in the 'Verify error: ...' clause or the error code line."""
+        text = (proc.stderr + proc.stdout).decode("utf-8", "replace")
+        m = re.search(r"Verify error:\s*(.+)$", text, re.M)
+        if m:
+            return "openssl: " + m.group(1).strip()
+        m = re.search(r"error:[0-9A-F]+:[^:]+:[^:]+:([^:]+)", text)
+        if m:
+            return "openssl: " + m.group(1).strip()
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("Using configuration from"):
+                continue
+            if "failure" in line.lower() or "mismatch" in line.lower() or "error" in line.lower():
+                return "openssl: " + line
+        return ""
+
+    # ── inputs ────────────────────────────────────────────────────────────
+    def read_package(self):
+        pkg = self.a.package
+        if not os.path.isdir(pkg):
+            self.fatal("%s is not a directory (exit 2)" % pkg)
+        mpath = os.path.join(pkg, "package.json")
+        if not os.access(mpath, os.R_OK):
+            self.fatal("%s/package.json is missing or unreadable (exit 2)" % pkg)
+        raw = open(mpath, "rb").read()
+        try:
+            self.mf = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            self.fatal("%s/package.json is not parseable as JSON: %s (exit 2)" % (pkg, exc))
+        if not isinstance(self.mf, dict):
+            self.fatal("%s/package.json is not a JSON object (exit 2)" % pkg)
+        self.pkdigest = sha256_bytes(raw)
+
+    def fatal(self, text):
+        """exit 2: the invocation is wrong or an input could not be read."""
+        sys.stderr.write("%s: %s\n" % (PROG, text))
+        not_checkable_stderr()
+        residual_stderr()
+        sys.exit(2)
+
+    def check_claim(self):
+        mf = self.mf
+        anchor = mf.get("anchor")
+        prof = anchor.get("profile") if isinstance(anchor, dict) else None
+        if not isinstance(anchor, dict) or anchor.get("anchored") is not True or prof != PROFILE:
+            sys.stderr.write(
+                "%s: %s does not claim the P3 anchor profile: anchor.anchored=%r, anchor.profile=%r.\n"
+                "  This is the verifier for %s only; validator/martelage-verify decides this package.\n"
+                % (PROG, self.a.package,
+                   anchor.get("anchored") if isinstance(anchor, dict) else None, prof, PROFILE))
+            not_checkable_stderr()
+            residual_stderr()
+            sys.exit(2)
+        self.claim = anchor.get("claim") if isinstance(anchor.get("claim"), dict) else {}
+        if anchor.get("binds") != "manifest-digest":
+            self.refuse("anchor: binds is %r, must be 'manifest-digest' — the seal binds sha256 of the package "
+                        "manifest (§9.2 MA-63)" % (anchor.get("binds"),))
+        if not isinstance(anchor.get("claim"), dict):
+            self.refuse("anchor: anchored=true and profile p3, but claim is not an object in the profile's schema "
+                        "(§9.2 MA-63)")
+        # §9.3: the claim's own schema
+        for field, want in (("sealer", None), ("seal", "qualified-electronic-seal"),
+                            ("timestamp", None), ("ltv", None), ("container", None)):
+            if field not in self.claim:
+                self.refuse("anchor: profile p3 claim carries no %r field (§9.3 MA-64)" % field)
+                continue
+            value = self.claim[field]
+            if field == "ltv":
+                if not isinstance(value, bool):
+                    self.refuse("anchor: claim.ltv is %r, must be true or false (§9.3 MA-64)" % (value,))
+            elif field == "timestamp":
+                if value not in ("qualified", "none"):
+                    self.refuse("anchor: claim.timestamp is %r, must be 'qualified' or 'none' (§9.3 MA-64)" % (value,))
+            elif not isinstance(value, str) or not value:
+                self.refuse("anchor: claim.%s is %r, must be a non-empty string (§9.3 MA-64)" % (field, value))
+            elif want is not None and value != want:
+                self.refuse("anchor: claim.%s is %r, must be %r (§9.3 MA-64)" % (field, value, want))
+        # §9.1a: no claim value may be a bare 64-hex digest
+        for key, value in sorted(self.claim.items()):
+            if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{64}", value):
+                self.refuse("anchor: claim field %r carries a bare 64-hex digest — a manifest cannot hold its own "
+                            "digest, so a claim carries only what a verifier needs in order to obtain the evidence "
+                            "(§9.1a MA-62)" % key)
+        known = {"container", "sealer", "seal", "timestamp", "ltv"}
+        for key in sorted(set(self.claim) - known):
+            self.ignored.append("  anchor.claim.%-24s 1 — this verifier does not know the field, so it is ignored "
+                                "and never guessed at (§5.2.11 MA-33)" % key)
+
+    # ── the container ─────────────────────────────────────────────────────
+    def open_container(self):
+        path = self.a.container
+        if not os.path.isfile(path):
+            self.fatal("--container %s is not a file (exit 2)" % path)
+        try:
+            self.zf = zipfile.ZipFile(path)
+        except (zipfile.BadZipFile, OSError) as exc:
+            self.refuse("container: %s is not a ZIP archive, so it is not an ASiC-E container (%s) (§9.3 MA-64)"
+                        % (path, exc))
+            return False
+        self.czf = self.zf
+        self.csize = os.path.getsize(path)
+        self.cdigest = sha256_file(path)
+        self.names = self.czf.namelist()
+        # A ZIP may hold two entries with the same name, and the two readers that
+        # matter disagree about which one wins: zipfile.read() returns the last,
+        # while an extractor may write the first. A container whose bytes depend
+        # on which reader opens it cannot be evidence of anything, so it is
+        # refused rather than read with one arbitrary choice.
+        seen = {}
+        for name in self.names:
+            seen[name] = seen.get(name, 0) + 1
+        for name in sorted(n for n, k in seen.items() if k > 1):
+            self.refuse("container: the ZIP holds %d entries named %r — a duplicate entry name makes the "
+                        "container's content depend on which reader opens it (this one reads the last), so no "
+                        "coverage claim about that name can be true (§9.3 MA-64)" % (seen[name], name))
+        return True
+
+    def check_mimetype(self):
+        infos = self.czf.infolist()
+        if "mimetype" not in self.names:
+            self.refuse("container: no 'mimetype' entry — an ASiC-E container MUST carry one (ETSI EN 319 162-1; "
+                        "§9.3 MA-64)")
+            self.mime_state = "absent"
+            return
+        # read the FIRST entry, not "the entry named mimetype" — a second entry of
+        # the same name is refused above, and this reads the one the ASiC-E rule
+        # is about rather than whichever the ZIP reader would hand back
+        data = self.czf.read(infos[0])
+        first = infos[0].filename == "mimetype"
+        stored = infos[0].compress_type == zipfile.ZIP_STORED if infos else False
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = ""
+        if text != MIMETYPE:
+            self.refuse("container: the 'mimetype' entry is %r, must be %r — this is not an ASiC-E container "
+                        "(§9.3 MA-64)" % (text, MIMETYPE))
+            self.mime_state = "wrong (%r)" % text
+            return
+        if not first:
+            self.refuse("container: the 'mimetype' entry is not the first entry of the ZIP — ETSI EN 319 162-1 "
+                        "requires it first and uncompressed (§9.3 MA-64)")
+            self.mime_state = "present but not first"
+            return
+        if not stored:
+            self.refuse("container: the 'mimetype' entry is compressed — ETSI EN 319 162-1 requires it stored "
+                        "(§9.3 MA-64)")
+            self.mime_state = "present but compressed"
+            return
+        self.mime_state = "present, first entry, stored"
+
+    def structural(self, name):
+        return name == "mimetype" or name == ASIC_MANIFEST or name == ASIC_TIMESTAMP or \
+            re.fullmatch(r"META-INF/signatures[^/]*\.p7s", name) is not None
+
+    def parse_asic_manifest(self):
+        """the ASiC manifest: one file-entry per covered file, each with a digest"""
+        if ASIC_MANIFEST not in self.names:
+            self.refuse("container: no %s — an ASiC-E container MUST carry an ASiC manifest naming the covered "
+                        "entries with their digests (§9.3 MA-64)" % ASIC_MANIFEST)
+            return None
+        data = self.czf.read(ASIC_MANIFEST)
+        self.mfdigest = sha256_bytes(data)
+        self.mfbytes = data
+        # the exact bytes, on disk, because openssl takes a file and the content
+        # of the signature is what those bytes are
+        self.mfpath = os.path.join(self.tmp, "manifest.xml")
+        with open(self.mfpath, "wb") as fh:
+            fh.write(data)
+        try:
+            root = ET.fromstring(data)
+        except ET.ParseError as exc:
+            self.refuse("container: %s is not well-formed XML: %s (§9.3 MA-64)" % (ASIC_MANIFEST, exc))
+            return None
+        entries = {}
+        for elem in root.iter():
+            if not elem.tag.endswith("file-entry"):
+                continue
+            full = None
+            for key, value in elem.attrib.items():
+                if key.endswith("full-path"):
+                    full = value
+            if full is None or full == "/":
+                continue
+            digest = None
+            alg = None
+            for child in elem.iter():
+                if not child.tag.endswith("digest"):
+                    continue
+                for key, value in child.attrib.items():
+                    if key.endswith("digest-algorithm"):
+                        alg = value
+                text = (child.text or "").strip()
+                if text:
+                    digest = text
+            if full in entries:
+                self.refuse("container: %s lists the file-entry %r twice (digests %s and %s) — the last one "
+                            "would silently win, and a reader cannot tell which digest covers the bytes "
+                            "(§9.3 MA-64)" % (ASIC_MANIFEST, full, entries[full][0] or "<none stated>",
+                                              digest or "<none stated>"))
+            entries[full] = (digest, alg)
+        self.covered = entries
+        return entries
+
+    def path_escape(self, rel):
+        """why a manifest path does not stay inside the package, or None.
+
+        os.path.join(pkg, rel) follows an absolute rel anywhere and a '..'
+        straight out of the package, and the bytes it finds there are then
+        printed as if the seal covered them. A covered path is a path INSIDE the
+        package or it is not coverage at all."""
+        if not rel:
+            return "an empty path"
+        if os.path.isabs(rel):
+            return "an absolute path"
+        if ".." in rel.replace("\\", "/").split("/"):
+            return "a path containing '..'"
+        root = os.path.realpath(self.a.package)
+        resolved = os.path.realpath(os.path.join(root, rel))
+        if resolved != root and not resolved.startswith(root + os.sep):
+            return "a path that resolves outside the package directory"
+        return None
+
+    def check_paths(self):
+        """every covered path, and every path package.json states, stays inside
+        the package"""
+        for name in sorted(getattr(self, "covered", {}) or {}):
+            why = self.path_escape(name)
+            if why:
+                self.refuse("container: the ASiC manifest covers %r, which is %s — a covered path names a file "
+                            "inside the package, so this seal covers bytes outside it and the coverage claim is "
+                            "false for them (§9.3 MA-64)" % (name, why))
+        for entry in self.mf.get("files") or []:
+            if not isinstance(entry, dict):
+                continue
+            rel = entry.get("path")
+            if not isinstance(rel, str):
+                continue
+            why = self.path_escape(rel)
+            if why:
+                self.refuse("package: package.json states the file %r, which is %s — a package file is a file "
+                            "inside the package (§5.2.5 MA-26, §9.3 MA-64)" % (rel, why))
+
+    def check_coverage(self):
+        """every listed entry present with the digest it states; no entry outside
+        the manifest's coverage while claiming to be evidence"""
+        if not self.covered:
+            return
+        for name in sorted(self.covered):
+            stated, alg = self.covered[name]
+            if name not in self.names:
+                self.refuse("container: the ASiC manifest lists %r with digest %s, but the ZIP holds no such entry "
+                            "(§9.3 MA-64)" % (name, stated or "<none stated>"))
+                continue
+            if stated is None:
+                self.refuse("container: the ASiC manifest lists %r with no digest — the entry is not covered by "
+                            "anything (§9.3 MA-64)" % name)
+                continue
+            if alg and not str(alg).lower().endswith("sha256"):
+                self.refuse("container: the ASiC manifest gives %r a digest algorithm of %r; this verifier checks "
+                            "sha256 only (§10.7)" % (name, alg))
+                continue
+            actual = sha256_bytes(self.czf.read(name))
+            if not digest_matches(stated, actual):
+                self.refuse("container: %r does not match the digest the ASiC manifest states for it — stated %s, "
+                            "in the container %s (§9.3 MA-64)" % (name, stated, actual))
+        for name in sorted(self.names):
+            if self.structural(name):
+                continue
+            if name not in self.covered:
+                self.refuse("container: the ZIP entry %r sits outside the ASiC manifest's coverage — an entry that "
+                            "nothing covers cannot be evidence of anything (§9.3 MA-64)" % name)
+
+    def check_package_coverage(self):
+        """the seal must cover the package it claims to bind"""
+        need = ["package.json"]
+        for entry in self.mf.get("files") or []:
+            if isinstance(entry, dict) and isinstance(entry.get("path"), str):
+                need.append(entry["path"])
+        self.package_files = []
+        for rel in need:
+            if rel in self.package_files:
+                continue
+            self.package_files.append(rel)
+        if not hasattr(self, "covered") or not self.covered:
+            return
+        for rel in self.package_files:
+            if rel not in self.covered:
+                self.refuse("container: the seal does not cover the package file %r — the package states that "
+                            "file and the ASiC manifest does not list it, so its bytes are outside the seal "
+                            "(§9.3 MA-64)" % rel)
+
+    def sealed_rows(self):
+        """the digests the seal covers, against the package files as they are on disk"""
+        rows = []
+        self.sealed_ok = True
+        if not getattr(self, "covered", None):
+            return rows
+        for rel in sorted(self.covered):
+            stated, _alg = self.covered[rel]
+            disk = None
+            if self.path_escape(rel):
+                # refused in check_paths; this verifier does not read bytes
+                # outside the package to prove a point
+                rows.append((rel, "<outside the package>", stated or "<none>", "REFUSED — see refusals"))
+                continue
+            diskpath = os.path.join(self.a.package, rel)
+            if os.path.isfile(diskpath):
+                disk = sha256_file(diskpath)
+            sealed = stated or "<none>"
+            if disk is None:
+                verdict = "the package holds no such file"
+                self.sealed_ok = False
+                self.refuse("seal: the container covers %r, but the package holds no such file — the seal describes "
+                            "a file that is not in the package (§9.3 MA-64)" % rel)
+            elif digest_matches(stated or "", disk):
+                verdict = "match"
+            else:
+                verdict = "MISMATCH"
+                self.sealed_ok = False
+                self.refuse("seal: %r no longer matches the digest the seal covers — sealed %s, on disk %s. The "
+                            "seal is valid and describes other bytes: this is the failure P3 exists to catch "
+                            "(§9.3 MA-64, §10.3 MA-70)" % (rel, sealed, disk))
+            rows.append((rel, disk or "<absent>", sealed, verdict))
+        return rows
+
+    def check_declared_digests(self):
+        """a finding, never a decision: whether package.json agrees with its own bytes is the base validator's
+        check (§5.2.5). Reported here because a disagreement makes the seal's binding ambiguous."""
+        for entry in self.mf.get("files") or []:
+            if not isinstance(entry, dict):
+                continue
+            rel = entry.get("path")
+            stated = entry.get("sha256")
+            if not isinstance(rel, str) or not isinstance(stated, str):
+                continue
+            if self.path_escape(rel):
+                continue
+            diskpath = os.path.join(self.a.package, rel)
+            if not os.path.isfile(diskpath):
+                continue
+            disk = sha256_file(diskpath)
+            if not digest_matches(stated, disk):
+                self.finding("  package.json states sha256 %s for %r and the bytes on disk are %s — the base "
+                             "validator owns this check (§5.2.5 MA-26); this run reports it and does not decide it"
+                             % (stated, rel, disk))
+
+    # ── the signature ─────────────────────────────────────────────────────
+    def signature_entries(self):
+        found = sorted(n for n in self.names if re.fullmatch(r"META-INF/signatures[^/]*\.p7s", n))
+        if not found:
+            self.refuse("container: no CAdES signature entry (META-INF/signatures*.p7s) — the package claims a "
+                        "qualified electronic seal and the container holds no signature at all (§9.3 MA-64)")
+        elif len(found) > 1:
+            self.finding("  the container carries %d signature entries (%s); every one is verified and every one "
+                         "must verify (§9.3)" % (len(found), ", ".join(found)))
+        return found
+
+    def anchors(self):
+        d = self.a.trust_anchors
+        if d is None:
+            return None
+        if not os.path.isdir(d):
+            self.fatal("--trust-anchors %s is not a directory (exit 2)" % d)
+        files = []
+        for name in sorted(os.listdir(d)):
+            path = os.path.join(d, name)
+            if not os.path.isfile(path):
+                continue
+            proc = subprocess.run([self.openssl, "x509", "-in", path, "-noout"], capture_output=True)
+            if proc.returncode == 0:
+                files.append(path)
+        self.anchor_certs = [c for c in (read_cert_text(self.openssl, p) for p in files) if c]
+        bundle = os.path.join(self.tmp, "anchors.pem")
+        self.anchors_bundle = bundle
+        with open(bundle, "wb") as out:
+            for path in files:
+                out.write(open(path, "rb").read())
+        return files, bundle
+
+    def anchor_subject(self, path):
+        proc = subprocess.run([self.openssl, "x509", "-in", path, "-noout", "-subject"], capture_output=True)
+        return proc.stdout.decode("utf-8", "replace").strip().replace("subject=", "")
+
+    def signerinfo_count(self, sigpath):
+        """how many signers the signature entry itself says it carries.
+
+        openssl writes one certificate per signerInfo to `-signer`, and this is
+        the count that enumeration is held against: a signer openssl did not
+        hand back must not go unnoticed."""
+        proc = self.openssl_run(["cms", "-cmsout", "-inform", "DER", "-in", sigpath, "-print"],
+                                label="how many signerInfos this signature entry states")
+        if proc.returncode != 0:
+            return None
+        text = proc.stdout.decode("utf-8", "replace")
+        m = re.search(r"^\s*signerInfos:\s*$", text, re.M)
+        if not m:
+            return None
+        return len(re.findall(r"^\s+d\.(?:issuerAndSerialNumber|subjectKeyIdentifier):", text[m.end():], re.M))
+
+    def verify_one_signature(self, name, anchorinfo, idx):
+        """(a) the signature over the manifest, (b) the chain to a supplied anchor,
+        (c) EVERY signer the entry carries. The signers and the chain are recorded
+        per entry; the date question is decided later, once a verified time exists."""
+        sigbytes = self.czf.read(name)
+        sigpath = os.path.join(self.tmp, "sig-%02d.p7s" % idx)
+        self.sig_paths[name] = sigpath
+        with open(sigpath, "wb") as fh:
+            fh.write(sigbytes)
+        signerout = os.path.join(self.tmp, "signer-%02d.pem" % idx)
+        certsout = os.path.join(self.tmp, "certs-%02d.pem" % idx)
+        for path in (signerout, certsout):
+            if os.path.exists(path):
+                os.unlink(path)
+
+        base = ["cms", "-verify", "-binary", "-inform", "DER", "-in", sigpath,
+                "-content", self.mfpath, "-purpose", "any", "-out", os.devnull]
+
+        # (a) does the signature verify over these bytes at all? -noverify takes
+        # the chain question out, so a failure here is the signature itself.
+        proc = self.openssl_run(base[:2] + ["-noverify"] + base[2:] +
+                                ["-signer", signerout, "-certsout", certsout],
+                                label="the signature over META-INF/manifest.xml, chain not consulted")
+        if proc.returncode != 0:
+            self.refuse("signature: the CAdES signature in %s does not verify over the exact bytes of %s — %s "
+                        "(§9.3 MA-64, §10.3 MA-70)" % (name, ASIC_MANIFEST, self.errline(proc) or "openssl refused it"))
+            return
+        # EVERY signer, not the first one: a co-signer that the report does not
+        # name is a signer no check in this run is made over.
+        signer_files = split_pem_certs(signerout, self.tmp, "signer-%02d" % idx)
+        self.signer_files[name] = signer_files
+        self.chain_files[name] = split_pem_certs(certsout, self.tmp, "certs-%02d" % idx)
+        self.chain_all[name] = certsout
+        certs = [c for c in (read_cert_text(self.openssl, p) for p in signer_files) if c]
+        self.signer_certs[name] = certs
+        stated = self.signerinfo_count(sigpath)
+        if stated is None:
+            self.refuse("signature: %s verifies, but this verifier could not count its signerInfos — an "
+                        "enumeration that cannot be checked is not an enumeration, so no signer of this entry is "
+                        "reported as checked (§10.3 MA-70)" % name)
+        elif stated != len(certs):
+            self.refuse("signature: %s states %d signerInfo(s) and openssl yielded %d signer certificate(s) — "
+                        "this verifier cannot enumerate every signer of this entry, and a signer it cannot "
+                        "enumerate is a signer it cannot check (§10.3 MA-70)" % (name, stated, len(certs)))
+        for cert in certs:
+            if cert.get("ca"):
+                self.refuse("signature: the signer certificate %s in %s is a CA (basicConstraints CA:TRUE) — a "
+                            "certificate that may issue certificates is not a sealing party, and a seal made with "
+                            "one names an issuer rather than the legal person that sealed (§9.3 MA-64, §10.3 MA-70)"
+                            % (cert.get("subject"), name))
+
+        # (b) does a supplied anchor reach the signer?
+        if anchorinfo is None:
+            self.cannot_decide("  signature: the CAdES signature verifies over the manifest, but no trust anchor was "
+                               "supplied — --trust-anchors is the input this check needs (§10.3 MA-70). The "
+                               "signature is NOT reported as verified against anyone")
+            return
+        files, bundle = anchorinfo
+        if not files:
+            self.cannot_decide("  signature: the --trust-anchors directory %s holds no certificate — there is "
+                               "nothing to reach the signer with (§10.3 MA-70)" % self.a.trust_anchors)
+            return
+        proc = self.openssl_run(base + ["-no_check_time", "-CAfile", bundle],
+                                label="the chain, with certificate dates left to this verifier")
+        if proc.returncode != 0:
+            self.cannot_decide("  signature: the signature verifies, but no supplied trust anchor reaches the "
+                               "signer (%s). This is CANNOT DECIDE, not a refusal: the verifier was not given the "
+                               "anchor that decides it (§10.3 MA-70)" % (self.errline(proc) or "openssl refused the chain"))
+            self.chain_reached[name] = None
+            self.anchor_reached = None
+            return
+        # name the anchor that did it, one file at a time
+        reached = None
+        for path in files:
+            one = self.openssl_run(base + ["-no_check_time", "-CAfile", path],
+                                   label="which supplied anchor completes the chain")
+            if one.returncode == 0:
+                reached = path
+                break
+        self.chain_reached[name] = reached or bundle
+        self.anchor_reached = reached
+        if reached is None:
+            self.anchor_how = "a combination of the supplied anchors"
+        else:
+            self.anchor_how = "%s (%s)" % (self.anchor_subject(reached), os.path.relpath(reached))
+        # the chain openssl builds, recorded so the report can name every
+        # certificate in it rather than only the signer
+        shown = []
+        for signer_file in signer_files:
+            argv = ["verify", "-CAfile", self.chain_reached[name], "-no_check_time", "-show_chain", signer_file]
+            if os.path.isfile(certsout):
+                argv[4:4] = ["-untrusted", certsout]
+            ch = self.openssl_run(argv, label="the chain openssl builds for one signer")
+            shown.extend((d, s.strip()) for d, s in
+                         re.findall(r"^depth=(\d+): (.+)$", ch.stdout.decode("utf-8", "replace"), re.M))
+        self.chain_show[name] = shown
+        # (c) is it valid at this host's clock? informational only — the clock is
+        # not evidence, and the decisive date check is at the claimed time below.
+        proc_now = self.openssl_run(base + ["-CAfile", bundle],
+                                    label="informational: valid at this host's clock")
+        self.valid_now = proc_now.returncode == 0
+
+    # ── the timestamp ─────────────────────────────────────────────────────
+    def check_timestamp(self, anchorinfo):
+        """RFC 3161 token over the signature value; establishes the claimed time"""
+        self.claimed_time = None
+        self.ts_state = "absent"
+        if ASIC_TIMESTAMP not in self.names:
+            if self.claim.get("timestamp") == "qualified":
+                self.refuse("timestamp: the claim states a qualified electronic time stamp and the container holds "
+                            "none (no %s) — the evidence contradicts the claim (§9.3 MA-64)" % ASIC_TIMESTAMP)
+                self.ts_state = "REFUSED: the claim states a qualified time stamp and the container holds none"
+            elif self.a.require_timestamp:
+                self.refuse("timestamp: --require-timestamp was given and the container holds no RFC 3161 token "
+                            "(no %s) (§9.3 MA-64)" % ASIC_TIMESTAMP)
+                self.ts_state = "REFUSED: --require-timestamp was given and the container holds no token"
+            else:
+                self.ts_state = "absent"
+            return
+        token = self.czf.read(ASIC_TIMESTAMP)
+        tokpath = os.path.join(self.tmp, "timestamp.tst")
+        with open(tokpath, "wb") as fh:
+            fh.write(token)
+        self.tokpath = tokpath
+        # the token must cover a signature value it sits beside. EVERY signature
+        # entry is tried: a token over the first of two entries is a valid token,
+        # and checking only the last one refuses a conformant container for a
+        # reason that is not true of it.
+        if not self.sig_paths:
+            self.cannot_decide("  timestamp: a token is present but the container carries no signature for it to "
+                               "cover — nothing was checked against it (§10.3 MA-70)")
+            self.ts_state = "present, but no signature to cover"
+            return
+        mismatch = 0
+        last = None
+        for name in sorted(self.sig_paths):
+            argv = ["ts", "-verify", "-in", tokpath, "-data", self.sig_paths[name], "-no_check_time"]
+            if anchorinfo is not None and anchorinfo[0]:
+                argv += ["-CAfile", anchorinfo[1]]
+            proc = self.openssl_run(argv, label="the token over the signature value of %s" % name)
+            if proc.returncode == 0:
+                self.ts_sig = name
+                self.ts_sigpath = self.sig_paths[name]
+                break
+            last = proc
+            text = (proc.stderr + proc.stdout).decode("utf-8", "replace")
+            if "imprint" in text or "mismatch" in text:
+                mismatch += 1
+        if self.ts_sig is None:
+            if mismatch == len(self.sig_paths):
+                self.refuse("timestamp: the RFC 3161 token covers none of the %d signature value(s) in this "
+                            "container — %s (§9.3 MA-64)"
+                            % (len(self.sig_paths), self.errline(last) or "message imprint mismatch"))
+                self.ts_state = "REFUSED: the token covers no signature in this container"
+            else:
+                self.cannot_decide("  timestamp: a token is present and covers a signature, but no supplied trust "
+                                   "anchor reaches the timestamping authority — %s (§10.3 MA-70)"
+                                   % (self.errline(last) or "chain not reachable"))
+                self.ts_state = "present, not verified (no TSA anchor)"
+            return
+        # what time does it establish?
+        proc = self.openssl_run(["ts", "-reply", "-in", tokpath, "-text"],
+                                label="the time, TSA and policy the token states")
+        body = proc.stdout.decode("utf-8", "replace")
+        m = re.search(r"Time stamp:\s*(.+?)\s*$", body, re.M)
+        self.ts_time_text = m.group(1) if m else None
+        self.claimed_time = parse_date(self.ts_time_text) if self.ts_time_text else None
+        m = re.search(r"TSA:\s*(.+?)\s*$", body, re.M)
+        self.ts_tsa = m.group(1) if m else None
+        self.ts_state = "present and VERIFIED against %s (over %s)" % (
+            self.anchor_how if getattr(self, "anchor_how", None) else "the supplied anchors", self.ts_sig)
+        # the certificates the token carries: the timestamping authority's chain,
+        # which the date check holds to the same time as the signer's
+        tokder = os.path.join(self.tmp, "token.der")
+        tokcerts = os.path.join(self.tmp, "token-certs.pem")
+        self.openssl_run(["ts", "-reply", "-in", tokpath, "-token_out", "-out", tokder],
+                         label="the token's PKCS#7 payload")
+        self.openssl_run(["pkcs7", "-inform", "DER", "-in", tokder, "-print_certs", "-out", tokcerts],
+                         label="the certificates the token carries")
+        self.tsa_cert_files = split_pem_certs(tokcerts, self.tmp, "tsa")
+        self.tsa_all_path = tokcerts
+        self.tsa_certs = [c for c in (read_cert_text(self.openssl, p) for p in self.tsa_cert_files) if c]
+        self.tsa_cert = self.tsa_certs[0] if self.tsa_certs else None
+        if self.claimed_time is None:
+            self.cannot_decide("  timestamp: the token verified but this verifier could not read the time it "
+                               "establishes, so no date check can be made (§10.3 MA-70)")
+
+    # ── the dates ─────────────────────────────────────────────────────────
+    def check_dates(self):
+        """every certificate this run established, at the claimed time — the only
+        time this run has evidence for. openssl was told not to check time so that
+        this is the one place a date decides anything, and it decides over the
+        whole chain and over the timestamping authority's chain, not over the
+        signer leaf alone."""
+        self.date_state = "not reached"
+        if self.claimed_time is None:
+            self.cannot_decide("  dates: no verified time can be established for this container, so whether the "
+                               "signer's certificate, the certificates in the chain it reaches, or the "
+                               "timestamping authority's certificate were valid when the seal was made CANNOT be "
+                               "decided — the input needed is a verified RFC 3161 token (§10.3 MA-70). No "
+                               "certificate date is reported as checked on this run")
+            self.date_state = "NOT checked — no verified time exists, so no date decides anything"
+            return
+        for name in sorted(self.signer_certs):
+            for cert in self.signer_certs[name]:
+                self.date_check_cert("the signer %s in %s" % (cert.get("subject"), name), cert)
+        self.check_chain_dates()
+        self.check_tsa_dates()
+        self.date_state = ("checked at %s — every signer, every certificate in the chain each one reaches, and "
+                           "the timestamping authority's chain" % self.claimed_time.strftime(ISO))
+        unchecked = sorted(n for n in self.signer_certs if self.chain_reached.get(n) is None)
+        if unchecked:
+            # the chain of an entry that reached no anchor was never built, so no
+            # certificate in it was date-checked: say which entries that leaves
+            self.date_state += (" — EXCEPT the chain of %s, which reached no supplied anchor and so was never "
+                                "date-checked (see 'not decidable')" % ", ".join(unchecked))
+
+    def verify_failure(self, proc):
+        """(subject, reason) from openssl verify's own output: it names the
+        certificate that failed and why, which is what a refusal has to carry."""
+        text = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+        m = re.search(r"^error \d+ at \d+ depth lookup:\s*(.+)$", text, re.M)
+        reason = m.group(1).strip() if m else (self.errline(proc) or "openssl refused it")
+        subject = None
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith(("error ", "depth=", "Chain:", "Verification")):
+                continue
+            if line.endswith(": OK"):
+                continue
+            subject = line
+            break
+        return subject, reason
+
+    def cert_by_subject(self, subject, certs):
+        if not subject:
+            return None
+        for cert in certs:
+            if (cert.get("subject") or "").strip() == subject.strip():
+                return cert
+        return None
+
+    def window_text(self, cert):
+        if not cert:
+            return "window not read"
+        nb = parse_date(cert.get("notBefore"))
+        na = parse_date(cert.get("notAfter"))
+        if nb is None or na is None:
+            return "window %r .. %r" % (cert.get("notBefore"), cert.get("notAfter"))
+        return "window %s .. %s" % (nb.strftime(ISO), na.strftime(ISO))
+
+    def epoch(self):
+        return int(self.claimed_time.timestamp())
+
+    def check_chain_dates(self):
+        """every certificate in every chain this run established, at the claimed
+        time. The chain was built with -no_check_time so that the date question
+        is answered here, once, against a time the run actually established."""
+        epoch = str(self.epoch())
+        for name in sorted(self.signer_certs):
+            if not self.chain_reached.get(name):
+                continue
+            candidates = [c for c in (read_cert_text(self.openssl, p)
+                                      for p in self.chain_files.get(name, [])) if c]
+            candidates += self.anchor_certs
+            certsfile = self.chain_all.get(name)
+            for signer_file in self.signer_files.get(name, []):
+                argv = ["verify", "-CAfile", self.chain_reached[name], "-attime", epoch]
+                if certsfile and os.path.isfile(certsfile):
+                    argv += ["-untrusted", certsfile]
+                argv.append(signer_file)
+                proc = self.openssl_run(argv, label="the whole chain, held to the claimed time")
+                if proc.returncode == 0:
+                    continue
+                subject, reason = self.verify_failure(proc)
+                cert = self.cert_by_subject(subject, candidates)
+                if "expired" not in reason and "not yet valid" not in reason:
+                    self.cannot_decide("  dates: the chain established for %s could not be re-checked at the "
+                                       "claimed time — %s (%s) (§10.3 MA-70)"
+                                       % (name, subject or "a certificate in the chain", reason))
+                    continue
+                self.refuse("dates: the chain established for %s does not hold at the claimed time — the "
+                            "certificate %s (%s) was %s then (%s). Every certificate in the chain is checked at the "
+                            "claimed time, not only the signer's (§9.3 MA-64, §10.3 MA-70)"
+                            % (name, subject or "in the chain", self.window_text(cert),
+                               "expired" if "expired" in reason else "not yet valid", reason))
+
+    def check_tsa_dates(self):
+        """the timestamping authority's chain, at the time its own token
+        establishes. A token from a certificate that was not valid then does not
+        establish that time."""
+        if not getattr(self, "ts_sigpath", None) or self.claimed_time is None:
+            return
+        epoch = str(self.epoch())
+        before = len(self.refusals)
+        bundle = getattr(self, "anchors_bundle", None)
+        for path in getattr(self, "tsa_cert_files", []):
+            argv = ["verify", "-CAfile", bundle, "-attime", epoch]
+            if getattr(self, "tsa_all_path", None) and os.path.isfile(self.tsa_all_path):
+                argv += ["-untrusted", self.tsa_all_path]
+            argv.append(path)
+            proc = self.openssl_run(argv, label="one certificate the token carries, at the claimed time")
+            if proc.returncode == 0:
+                continue
+            subject, reason = self.verify_failure(proc)
+            if "expired" not in reason and "not yet valid" not in reason:
+                continue
+            cert = self.cert_by_subject(subject, getattr(self, "tsa_certs", []))
+            self.refuse("dates: the timestamping authority's certificate %s (%s) was %s at the time the token "
+                        "establishes (%s) — a token whose signer was not valid then does not establish that time "
+                        "(§9.3 MA-64, §10.3 MA-70)"
+                        % (subject or "in the token", self.window_text(cert),
+                           "expired" if "expired" in reason else "not yet valid",
+                           self.claimed_time.strftime(ISO)))
+        # openssl's own verdict on the token with the whole TSA chain held to that
+        # time, in case a certificate the per-certificate pass did not name decides it
+        if bundle:
+            argv = ["ts", "-verify", "-in", self.tokpath, "-data", self.ts_sigpath, "-attime", epoch,
+                    "-CAfile", bundle]
+            proc = self.openssl_run(argv, label="the token, with the TSA chain held to the claimed time")
+            if proc.returncode != 0 and len(self.refusals) == before:
+                subject, reason = self.verify_failure(proc)
+                if "expired" in reason or "not yet valid" in reason:
+                    self.refuse("dates: the RFC 3161 token does not hold at the time it establishes — %s (%s) "
+                                "(§9.3 MA-64, §10.3 MA-70)" % (subject or "a certificate in its chain", reason))
+                else:
+                    self.cannot_decide("  dates: the token could not be re-checked at the time it establishes — "
+                                       "%s (§10.3 MA-70)" % reason)
+
+    def date_check_cert(self, label, cert):
+        if not cert:
+            return
+        nb = parse_date(cert.get("notBefore"))
+        na = parse_date(cert.get("notAfter"))
+        if nb is None or na is None:
+            self.cannot_decide("  dates: %s carries dates this verifier could not read (%r .. %r) (§10.3 MA-70)"
+                               % (label, cert.get("notBefore"), cert.get("notAfter")))
+            return
+        when = self.claimed_time
+        if nb <= when <= na:
+            return
+        which = "expired" if when > na else "not yet valid"
+        self.refuse("dates: %s was %s at the claimed time — the certificate's window is %s .. %s and the claimed "
+                    "time is %s (%s) (§9.3 MA-64, §10.3 MA-70)"
+                    % (label, which, nb.strftime(ISO), na.strftime(ISO), when.strftime(ISO),
+                       "from the verified timestamp" if self.ts_state.startswith("present and VERIFIED")
+                       else "self-asserted by the signature"))
+
+    # ── the operator ──────────────────────────────────────────────────────
+    def check_operator(self, signers):
+        """§9.3 limit i over the FULL signer set.
+
+        Every signer of every signature entry is compared, because a seal the
+        operator co-signed is a seal the operator holds a key to: taking the first
+        signer as "the signer" is how a co-signer escapes the exclusion entirely.
+        """
+        self.operator_state = "NOT checked — --operator-cert was not supplied"
+        if self.a.operator_cert is None:
+            self.cannot_decide("  operator: the 'legal person OTHER than the operator' clause (§9.3 limit i) cannot be "
+                               "checked: --operator-cert was not supplied, and this verifier does not assume the "
+                               "signer is someone else (§10.3 MA-70)")
+            return
+        path = self.a.operator_cert
+        if not os.path.isfile(path) or not os.access(path, os.R_OK):
+            self.fatal("--operator-cert %s is missing or unreadable (exit 2)" % path)
+        op = read_cert_text(self.openssl, path)
+        if not op:
+            self.fatal("--operator-cert %s is not a certificate this openssl can read (exit 2)" % path)
+        self.operator_cert = op
+        if not signers:
+            why = ("the signature over the manifest does not verify, so which certificate signed it is not "
+                   "established" if str(self.layer.get("signature", "")).startswith("REFUSED")
+                   else "no signature entry yielded a signer certificate")
+            self.cannot_decide("  operator: the signer's certificate could not be established — %s — so it cannot "
+                               "be compared with --operator-cert (§10.3 MA-70)" % why)
+            return
+        entries = len(self.signer_certs)
+        selfseals = [c for c in signers if c.get("spki") and c.get("spki") == op.get("spki")]
+        if selfseals:
+            self.refuse("operator: the seal was made with the OPERATOR's own key — %d of the %d signer(s) in this "
+                        "container is %s, whose public key is the same as --operator-cert %s. Every signer of "
+                        "every signature entry is compared, and one of them being the operator refuses the "
+                        "container: a co-signer does not launder a self-seal, because the operator holds that key "
+                        "too. A seal made with the operator's own key is worthless against the operator, because "
+                        "they hold the key (§9.3 limit i, MA-64)"
+                        % (len(selfseals), len(signers),
+                           ", ".join(c.get("subject") or "?" for c in selfseals), op.get("subject")))
+            self.operator_state = ("SELF-SEAL — the operator's own key signed as %s, one of %d signer(s) in %d "
+                                   "signature entry(ies)"
+                                   % (", ".join(c.get("subject") or "?" for c in selfseals), len(signers), entries))
+            return
+        self.operator_state = ("checked: the signer's public key differs from the operator's — over %d signer(s) "
+                               "in %d signature entry(ies) (%s vs %s)"
+                               % (len(signers), entries,
+                                  (signers[0].get("spki") or "?")[:16] + "…", (op.get("spki") or "?")[:16] + "…"))
+        for signer in signers:
+            if (signer.get("subject") or "").strip() == (op.get("subject") or "").strip():
+                self.finding("  the signer %r and --operator-cert carry the SAME subject with different keys — the "
+                             "key differs, so this is not a self-seal, but a reader should not read the subject as a "
+                             "distinct person without checking why" % (signer.get("subject"),))
+
+    # ── LTV, reported and never validated ─────────────────────────────────
+    def check_ltv(self):
+        material = sorted(n for n in self.names
+                          if n != ASIC_TIMESTAMP and (n.startswith("META-INF/ltv") or n.endswith(".tst")))
+        self.ltv_material = material
+        claimed = self.claim.get("ltv")
+        if material:
+            self.ltv_state = ("present (%d entr%s: %s) — reported, NOT validated"
+                              % (len(material), "y" if len(material) == 1 else "ies", ", ".join(material)))
+            if claimed is False:
+                self.finding("  the container carries long-term validation material (%s) and the claim states "
+                             "ltv=false — reported, never validated (§9.3)" % ", ".join(material))
+        else:
+            self.ltv_state = "absent — reported, never validated"
+            if claimed is True:
+                self.refuse("ltv: the claim states ltv=true and the container carries no long-term validation "
+                            "material — the evidence contradicts the claim (§9.3 MA-64)")
+        for name in material:
+            self.ignored.append("  container entry %-24s 1 — long-term validation material: listed, never parsed, "
+                                "never validated (§10.7)" % name)
+
+
+def digest_matches(stated, actual):
+    """the ASiC manifest may state a digest in hex or base64 (ODF uses base64)"""
+    import base64
+    stated = (stated or "").strip()
+    if not stated:
+        return False
+    if re.fullmatch(r"[0-9a-fA-F]{64}", stated):
+        return stated.lower() == actual.lower()
+    try:
+        raw = base64.b64decode(stated, validate=True)
+    except Exception:
+        return False
+    return raw.hex() == actual.lower()
+
+
+def split_pem_certs(path, outdir, tag):
+    """every certificate in a PEM file, each in its own file, in the order openssl
+    wrote them.
+
+    `openssl cms -verify -signer` writes one certificate per signerInfo; reading
+    only the first is how a co-signer escapes every check made over "the signer".
+    """
+    if not os.path.isfile(path):
+        return []
+    with open(path, "r", errors="replace") as fh:
+        text = fh.read()
+    blocks = re.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", text, re.S)
+    out = []
+    for i, block in enumerate(blocks):
+        one = os.path.join(outdir, "%s-%02d.pem" % (tag, i))
+        with open(one, "w") as fh:
+            fh.write(block + "\n")
+        out.append(one)
+    return out
+
+
+def read_cert_text(openssl, path):
+    """subject, issuer, window, basicConstraints and public-key digest of a certificate file"""
+    if not os.path.isfile(path):
+        return None
+    proc = subprocess.run([openssl, "x509", "-in", path, "-noout", "-subject", "-issuer",
+                           "-startdate", "-enddate", "-dateopt", "iso_8601"], capture_output=True)
+    text = proc.stdout.decode("utf-8", "replace")
+    if proc.returncode != 0 or "notBefore" not in text:
+        proc = subprocess.run([openssl, "x509", "-in", path, "-noout", "-subject", "-issuer",
+                               "-startdate", "-enddate"], capture_output=True)
+        text = proc.stdout.decode("utf-8", "replace")
+        if proc.returncode != 0:
+            return None
+    proc = subprocess.run([openssl, "x509", "-in", path, "-noout", "-pubkey"], capture_output=True)
+    spki = sha256_bytes(proc.stdout) if proc.returncode == 0 else None
+    # basicConstraints: whether this certificate may issue certificates at all.
+    # A CA is not a sealing party, so this is read rather than assumed absent.
+    proc = subprocess.run([openssl, "x509", "-in", path, "-noout", "-ext", "basicConstraints"],
+                          capture_output=True)
+    bc = " ".join(proc.stdout.decode("utf-8", "replace").split()) if proc.returncode == 0 else ""
+    if "No extensions" in bc:
+        bc = ""
+    return {
+        "subject": (cert_date(text, "subject") or "").replace("subject=", ""),
+        "issuer": (cert_date(text, "issuer") or "").replace("issuer=", ""),
+        "notBefore": cert_date(text, "notBefore"),
+        "notAfter": cert_date(text, "notAfter"),
+        "spki": spki,
+        "basicConstraints": bc or "absent",
+        "ca": "CA:TRUE" in bc,
+    }
+
+
+def residual_stderr():
+    sys.stderr.write("\n%s\n%s\n\n" % (RESID1, RESID2))
+
+
+def not_checkable_stderr():
+    """the §10.7 block, for the exit-2 paths that name a package.
+
+    The report prints it on every run that reaches a report; an exit-2 run has
+    no report, so without this the docstring's "on any run" would be a claim
+    about the runs that happen to get that far."""
+    sys.stderr.write("\nnot checkable by this verifier (every run)\n")
+    for name, text in NOT_CHECKABLE:
+        sys.stderr.write("  - %s: %s\n" % (name, text))
+    sys.stderr.write("\n")
+
+
+def usage(stream=sys.stdout):
+    stream.write("""usage: p3-verify [options] PACKAGE-DIR
+
+  PACKAGE-DIR            a directory holding package.json that claims the P3
+                         anchor profile (p3-eidas-qualified-seal-asic-e)
+
+  --container FILE       the ASiC-E container: the P3 evidence. Without it the
+                         seal is reported CANNOT DECIDE, naming this input
+  --trust-anchors DIR    a directory of PEM trust anchors: what the signer's
+                         chain is checked against
+  --operator-cert FILE   a certificate proving the operator's own identity, so
+                         that "a legal person OTHER than the operator" (§9.3
+                         limit i) is checked rather than assumed. Without it that
+                         clause is reported CANNOT DECIDE
+  --require-timestamp    refuse a container that carries no RFC 3161 token
+  --debug                print the openssl invocations this run made
+  -h, --help             this text
+
+exit codes
+  0  CONFORMANT      every check this run could perform passed
+  1  NON-CONFORMANT  the evidence contradicts the claim: a malformed container
+                     (a wrong mimetype, a duplicate ZIP entry name, a covered
+                     path outside the package), a digest that moved, a signature
+                     that does not verify, a signer that is a CA, any signer or
+                     chain certificate that was not valid at the claimed time, a
+                     token from a TSA certificate that was not, or a seal the
+                     operator co-signed
+  2  USAGE/UNREADABLE  bad invocation, an unreadable input, or a package that
+                     does not claim the P3 profile
+  3  CANNOT DECIDE   an input this verifier needs to decide was not supplied:
+                     the container, trust anchors, --operator-cert, or a
+                     verified timestamp to establish the claimed time
+
+Every signer of every signature entry is enumerated and checked: the operator
+exclusion and the certificate-date check are made over the whole signer set, not
+over the first certificate found. This verifier never reads a CRL, never contacts
+an OCSP responder, and never validates long-term validation material. Every run
+says so in its own report.
+""")
+    stream.write("residual (§3.3)\n%s\n%s\n" % (RESID1, RESID2))
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--container")
+    ap.add_argument("--trust-anchors", dest="trust_anchors")
+    ap.add_argument("--operator-cert", dest="operator_cert")
+    ap.add_argument("--require-timestamp", dest="require_timestamp", action="store_true")
+    ap.add_argument("--debug", action="store_true")
+    ap.add_argument("-h", "--help", action="store_true")
+    ap.add_argument("package", nargs="?")
+    ap.add_argument("rest", nargs="*")
+    args, unknown = ap.parse_known_args(argv)
+
+    if args.help:
+        usage()
+        return 0
+    if unknown:
+        sys.stderr.write("%s: unknown option %s\n" % (PROG, unknown[0]))
+        usage(sys.stderr)
+        if args.package:
+            not_checkable_stderr()
+            residual_stderr()
+        return 2
+    if args.rest:
+        sys.stderr.write("%s: unexpected argument %s\n" % (PROG, args.rest[0]))
+        if args.package:
+            not_checkable_stderr()
+            residual_stderr()
+        return 2
+    if not args.package:
+        usage(sys.stderr)
+        return 2
+
+    v = Verifier(args)
+    v.read_package()
+    v.check_claim()
+
+    have = v.open_container() if args.container else False
+    if args.container is None:
+        v.cannot_decide("  container: the package claims the P3 profile but --container was not supplied — the "
+                        "ASiC-E container is the evidence this check needs (§10.3 MA-70)")
+
+    if have:
+        def structure():
+            v.check_mimetype()
+            v.parse_asic_manifest()
+            v.check_paths()
+            v.check_coverage()
+            v.check_package_coverage()
+        v.phase("structure", structure, label="checked (mimetype, coverage, entry digests, paths)")
+        v.rows = []
+        v.phase("seal", lambda: v.rows.extend(v.sealed_rows()), label="checked against the package on disk")
+        v.check_declared_digests()
+
+    anchorinfo = v.anchors() if have else None
+    if have and v.covered:
+        def sigs():
+            for idx, name in enumerate(v.signature_entries()):
+                v.verify_one_signature(name, anchorinfo, idx)
+        v.phase("signature", sigs, label="checked (openssl cms -verify)")
+        v.phase("timestamp", v.check_timestamp, anchorinfo)
+    elif have:
+        v.phase("timestamp", v.check_timestamp, None)
+
+    # EVERY signer of every entry, in report order: one list, because every check
+    # below is made over all of them and not over the first one found.
+    signers = []
+    for _name in sorted(v.signer_certs):
+        signers.extend(v.signer_certs[_name])
+
+    if have:
+        v.phase("dates", v.check_dates, label="checked at the claimed time")
+        v.phase("operator", v.check_operator, signers, label="checked against --operator-cert")
+        v.check_ltv()
+    else:
+        missing = ("NOT checked — the container could not be opened (see refusals)" if args.container is not None
+                   else "NOT checked — missing input: --container")
+        for key in ("structure", "signature", "seal", "timestamp", "dates", "operator"):
+            v.layer[key] = missing
+
+    # ── the report, in §10.4's order ──────────────────────────────────────
+    o = v.out
+    mf = v.mf
+    producer = mf.get("producer") or {}
+    subject = mf.get("subject") or {}
+    prev = mf.get("prev") or {}
+    o("%s — MARTELAGE-0.1 P3 verifier (%s)" % (PROG, PROFILE))
+    o()
+    o("package      %s" % args.package)
+    o("digest       %s   (sha256 of package.json: this is the package digest)" % v.pkdigest)
+    o("standard     %s v%s (kind %s)" % (mf.get("standard"), mf.get("v"), mf.get("kind")))
+    o("subject      %s (kind %s)" % (subject.get("id"), subject.get("kind")))
+    o("producer     %s / %s %s / contract %s" % (producer.get("id"), producer.get("component"),
+                                                 producer.get("version"), producer.get("contract")))
+    o("created_at   %s" % json.dumps(mf.get("created_at")))
+    o("prev         %s (how: %s)" % (json.dumps(prev.get("package_sha")), prev.get("how")))
+    o("claim        profile '%s', binds '%s'" % (PROFILE, mf.get("anchor", {}).get("binds")))
+    o("             sealer %r, seal %r, timestamp %r, ltv %r, container %r"
+      % (v.claim.get("sealer"), v.claim.get("seal"), v.claim.get("timestamp"),
+         json.dumps(v.claim.get("ltv")), v.claim.get("container")))
+
+    # 2. the scope section in full
+    o()
+    o("scope")
+    scope = mf.get("scope") or {}
+    contains = scope.get("contains") or []
+    o("  contains:")
+    if contains:
+        for line in contains:
+            o("    - %s" % line)
+    else:
+        o("    none stated")
+    o("  not_contains:")
+    notc = scope.get("not_contains") or []
+    if notc:
+        for item in notc:
+            if isinstance(item, dict):
+                o("    - %r — meaning %r%s" % (item.get("thing"), item.get("meaning"),
+                                               " (why: %s)" % item.get("why") if item.get("why") else ""))
+            else:
+                o("    - %r" % (item,))
+    else:
+        o("    none stated")
+    o("  (the scope's vocabulary and shape are the base validator's check, §8 MA-52..MA-60; this run echoes it)")
+
+    # 3. the per-file digest check, as the seal makes it
+    o()
+    o("files")
+    o("  this run's per-file check is the seal's: every entry the container covers is")
+    o("  listed with its digest on disk and the digest the seal states. Whether the")
+    o("  package's own files[] agrees with its bytes is the base validator's check")
+    o("  (martelage-verify, §5.2.5); a disagreement is reported above as a finding.")
+    rows = getattr(v, "rows", [])
+    if rows:
+        o()
+        o("  %-28s %-64s %-64s %s" % ("PATH", "ON DISK (sha256)", "SEALED (sha256)", "VERDICT"))
+        for rel, disk, sealed, verdict in rows:
+            o("  %-28s %-64s %-64s %s" % (rel, disk, sealed, verdict))
+    else:
+        o("  none — no container was read, so no sealed digest was compared")
+
+    # 4. the per-stream table is the base validator's; say so rather than skip it
+    o()
+    o("streams")
+    o("  not this verifier's check: stream continuity, sequence, the predecessor chain")
+    o("  and the seam rule (§6.2, §7.2, §6.7) belong to validator/martelage-verify. This")
+    o("  run does not re-check them and does not report them as checked.")
+
+    # 5. the anchor verdict
+    o()
+    o("anchor")
+    if v.refusals:
+        o("  CLAIMED — profile '%s', and the evidence does not hold: see refusals" % PROFILE)
+    elif v.undecided:
+        o("  CLAIMED — profile '%s', NOT verified by this run: see 'not decidable'" % PROFILE)
+    else:
+        o("  VERIFIED — profile '%s': the seal is valid, chains to a supplied anchor, covers" % PROFILE)
+        o("  this package's bytes, and was made by a legal person other than the operator")
+    if have:
+        o("  container    %s" % args.container)
+        o("  sha256       %s   (%d bytes)" % (v.cdigest, v.csize))
+        o("  entries      %d in the ZIP, %d covered by %s"
+          % (len(v.names), len(getattr(v, "covered", {}) or {}), ASIC_MANIFEST))
+        o("  mimetype     %s — %s" % (MIMETYPE, getattr(v, "mime_state", "not read")))
+        o("  manifest     %s   sha256 %s" % (ASIC_MANIFEST, getattr(v, "mfdigest", "<absent>")))
+        sigs = [n for n in v.names if re.fullmatch(r"META-INF/signatures[^/]*\.p7s", n)]
+        for name in sigs:
+            o("  signature    %s (%d bytes, CAdES, detached, DER)" % (name, len(v.czf.read(name))))
+        o("  construction detached CAdES over the exact bytes of %s — the manifest-signature" % ASIC_MANIFEST)
+        o("               form. It is NOT the EN 319 162-1 multi-file concatenated-digest form,")
+        o("               which this verifier does not parse and will not report as verified.")
+        # the signer SET, not one subject: the number of signers and every one of
+        # them, because a check made over "the signer" is a check a co-signer is
+        # not subject to.
+        total = sum(len(c) for c in v.signer_certs.values())
+        o("  signers      %d in %d signature entry(ies) — every one is compared to --operator-cert and"
+          % (total, len(v.signer_certs)))
+        o("               date-checked; none of them is reported as 'the signer'")
+        for name in sorted(v.signer_certs):
+            for i, cert in enumerate(v.signer_certs[name]):
+                o("  signer %d/%-3d %s" % (i + 1, len(v.signer_certs[name]), cert.get("subject")))
+                o("               in %s" % name)
+                o("               issuer %s" % cert.get("issuer"))
+                o("               window %s .. %s" % (cert.get("notBefore"), cert.get("notAfter")))
+                o("               basicConstraints %s" % cert.get("basicConstraints"))
+                o("               spki %s   (sha256 of the SubjectPublicKeyInfo)" % (cert.get("spki") or "?"))
+        if getattr(v, "anchor_how", None):
+            o("  chain        reached a supplied anchor: %s" % v.anchor_how)
+        elif anchorinfo is not None:
+            o("  chain        no supplied anchor reached the signer — see 'not decidable'")
+        else:
+            o("  chain        NOT checked — no --trust-anchors was supplied")
+        if getattr(v, "valid_now", None) is not None:
+            o("  valid now    %s (informational only: this host's clock is not evidence)"
+              % ("yes" if v.valid_now else "no"))
+        o("  dates        %s" % getattr(v, "date_state", "not reached"))
+        for name in sorted(v.chain_show):
+            if v.chain_show[name]:
+                o("  chain certs  %s: %s" % (name, ", ".join("depth %s %s" % (d, subj)
+                                                            for d, subj in v.chain_show[name])))
+
+    # the timestamp
+    o()
+    o("timestamp")
+    o("  %s" % getattr(v, "ts_state", "absent"))
+    if getattr(v, "ts_time_text", None):
+        o("  genTime      %s%s" % (v.claimed_time.strftime(ISO) if v.claimed_time else v.ts_time_text,
+                                   "  (the claimed time: what the dates below are checked against)"))
+    if getattr(v, "ts_tsa", None):
+        o("  TSA          %s" % v.ts_tsa)
+    if getattr(v, "claimed_time", None) is None:
+        o("  claimed time none — no verified time can be established for this container")
+
+    # the operator clause
+    o()
+    o("operator exclusion (§9.3 limit i)")
+    if args.operator_cert:
+        op = getattr(v, "operator_cert", None) or {}
+        o("  --operator-cert  %s" % op.get("subject", args.operator_cert))
+        o("  operator spki    %s" % (op.get("spki") or "?"))
+        for name in sorted(v.signer_certs):
+            for cert in v.signer_certs[name]:
+                o("  signer spki      %s   %s (%s)" % (cert.get("spki") or "?", cert.get("subject"), name))
+    o("  verdict          %s" % getattr(v, "operator_state", "not reached"))
+
+    # LTV
+    o()
+    o("long-term validation")
+    o("  %s" % getattr(v, "ltv_state", "absent — reported, never validated"))
+
+    # 6. the layers
+    o()
+    o("layers")
+    o("  layer 0  body digests        not this verifier's check — martelage-verify owns §7.1")
+    o("  layer 1  stream continuity   not this verifier's check — martelage-verify owns §7.2")
+    o("  layer 2  package digest      %s" % v.pkdigest)
+    o("  layer 3  package chain       not armed — this verifier takes no --prev-package")
+    o("  layer 4  anchor              claimed (profile %s)" % PROFILE)
+    o("  p3.1     container structure %s" % v.layer.get("structure", "not reached"))
+    o("  p3.2     CAdES signature     %s" % v.layer.get("signature", "not reached"))
+    o("  p3.3     sealed digests      %s" % v.layer.get("seal", "not reached"))
+    if not have:
+        trust_layer = v.layer.get("structure", "NOT checked — missing input: --container")
+    elif not args.trust_anchors:
+        trust_layer = "NOT checked — missing input: --trust-anchors"
+    elif not str(v.layer.get("signature", "")).startswith("checked"):
+        trust_layer = "NOT checked — the signature did not reach a verdict, so no chain was built"
+    elif v.anchor_how:
+        trust_layer = "checked against %s — reached %s" % (args.trust_anchors, v.anchor_how)
+    else:
+        trust_layer = ("NOT verified — the signature verifies but no supplied anchor reaches the signer "
+                       "(see 'not decidable')")
+    o("  p3.4     trust anchor        %s" % trust_layer)
+    o("  p3.5     qualified timestamp %s" % ts_layer(v, args))
+    if not have:
+        operator_layer = v.layer.get("operator", "NOT checked — missing input: --container")
+    elif not args.operator_cert:
+        operator_layer = "NOT checked — missing input: --operator-cert"
+    else:
+        operator_layer = v.layer.get("operator", "not reached")
+    o("  p3.6     operator exclusion  %s" % operator_layer)
+    o("  p3.7     long-term validation NOT checked by any run of this verifier — reported present or absent only")
+    o("  p3.8     revocation          NOT checked by any run of this verifier — no CRL is read, no OCSP responder "
+      "is contacted")
+
+    # 7. refusals
+    o()
+    o("refusals")
+    if v.refusals:
+        for line in v.refusals:
+            o("  " + line)
+    else:
+        o("  none")
+    # 8. findings
+    o()
+    o("findings")
+    if v.findings:
+        for line in v.findings:
+            o(line if line.startswith("  ") else "  " + line)
+    else:
+        o("  none")
+    # 9. what the run ignored
+    o()
+    o("ignored")
+    if v.ignored:
+        o("  %d item(s) this verifier did not know or does not interpret — ignored, never guessed at (§5.2.11 MA-33):"
+          % len(v.ignored))
+        for line in v.ignored:
+            o(line)
+    else:
+        o("  none — every claim field and every container entry this run met is one it knows (§5.2.11 MA-33)")
+    # 10. what the run could not decide
+    o()
+    o("not decidable (this run)")
+    if v.undecided:
+        for line in v.undecided:
+            o(line if line.startswith("  ") else "  " + line)
+    else:
+        o("  nothing — every check this verifier implements reached a verdict on this package (§10.3 MA-70)")
+
+    # §10.7 — on every run
+    o()
+    o("not checkable by this verifier (every run)")
+    o("  This section is printed on every run, whatever the verdict above says (§10.7 MA-74, §9.3):")
+    for name, text in NOT_CHECKABLE:
+        o("  - %s: %s" % (name, text))
+
+    # 11. the residual
+    o()
+    o("residual")
+    o(RESID1)
+    o(RESID2)
+
+    # 12. the verdict
+    o()
+    if v.debug and args.debug:
+        o("openssl (--debug)")
+        for line in v.debug:
+            o(line)
+        o()
+    if v.refusals:
+        o("verdict      NON-CONFORMANT — %d refusal(s)" % len(v.refusals))
+        code = 1
+    elif v.undecided:
+        o("verdict      CANNOT DECIDE — %d input(s) this verifier needs were absent" % len(v.undecided))
+        code = 3
+    else:
+        o("verdict      CONFORMANT — the seal verified against the supplied anchors, the sealed digests are the "
+          "package's, and the signer is not the operator")
+        code = 0
+
+    sys.stdout.write("\n".join(v.report) + "\n")
+    shutil.rmtree(v.tmp, ignore_errors=True)
+    return code
+
+
+def ts_layer(v, args):
+    """the timestamp layer reads its state, never a guess about why a refusal
+    happened somewhere else in the report"""
+    layer = v.layer.get("timestamp")
+    if layer and not layer.startswith(("checked", "REFUSED")):
+        return layer
+    state = getattr(v, "ts_state", "absent")
+    if state.startswith("REFUSED"):
+        return "NOT checked — " + state.split(":", 1)[1].strip()
+    if state.startswith("present and VERIFIED"):
+        return "checked — the token verified and its time is the claimed time"
+    if state.startswith("present"):
+        return "NOT checked — %s (see 'not decidable')" % state
+    if state.startswith("absent"):
+        return "not present — no claimed time can be established (see 'not decidable')"
+    return state
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the point is to name it, not to swallow it
+        # A crash is a statement about this verifier, not about the package. It
+        # must never be reported as exit 1, which says the evidence contradicts
+        # the claim; 2 is the code that says the run could not be carried out.
+        sys.stderr.write("%s: internal error, not a verdict on the package: %s: %s\n"
+                         % (PROG, type(exc).__name__, exc))
+        residual_stderr()
+        sys.exit(2)

@@ -1,0 +1,37 @@
+vector: 39-container-malformed
+what:   three containers that are not ASiC-E containers, over one package. The first
+        carries "application/zip" as its mimetype; the second's ASiC manifest lists
+        records.jsonl with its digest and the ZIP holds no such entry; the third
+        holds notes.md in the ZIP and does not list it in the ASiC manifest, so
+        nothing binds that entry's bytes. All three are refused (exit 1), and each
+        refusal names the entry and the digest, so a reader can see what failed
+        without unpacking anything
+run:    validator/p3-verify --container vectors/39-container-malformed/seal-bad-mimetype.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/39-container-malformed/pkg
+exit:   1
+also:   validator/p3-verify \
+          --container vectors/39-container-malformed/seal-missing-entry.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/39-container-malformed/pkg   ->  exit 1, "the ASiC manifest lists
+        'records.jsonl' with digest ..., but the ZIP holds no such entry"
+        validator/p3-verify \
+          --container vectors/39-container-malformed/seal-uncovered-entry.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/39-container-malformed/pkg   ->  exit 1, "the ZIP entry 'notes.md'
+        sits outside the ASiC manifest's coverage" and "the seal does not cover the
+        package file 'notes.md'"
+        the same package sealed correctly (vector 34's container)   ->  exit 0
+must print:
+  - "the 'mimetype' entry is 'application/zip'"
+  - "must be 'application/vnd.etsi.asic-e+zip'"
+requirements exercised: MA-64, MA-70
+why it fails without the fix: MEASURED. In a copy of the verifier in which the
+        mimetype is compared to nothing — the ZIP opens, so a parser that only calls
+        zipfile.ZipFile and moves on never looks — this container reports CONFORMANT
+        (exit 0): its signature verifies, its manifest digests match, and nothing else
+        in it is wrong. That copy still reports 0 on vector 34. The asymmetry is 0
+        against 1 on the same package, with one entry's bytes changed

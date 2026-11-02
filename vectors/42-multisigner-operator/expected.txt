@@ -1,0 +1,50 @@
+vector: 42-multisigner-operator
+what:   the operator's own key as a CO-SIGNER behind a valid signer. seal.asice carries ONE
+        signature entry with TWO signerInfos: signerA (Witness AG, a legal person other than
+        the operator) and operator (Operator GmbH, the party the seal is supposed to be out of
+        reach of). Both chain to intermediate A and both verify. The seal WAS made with the
+        operator's own key, and only a verifier that enumerates every signer of the entry can
+        see it. This is §9.3 limit (i) with the operator one certificate further along.
+run:    validator/p3-verify --container vectors/42-multisigner-operator/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/42-multisigner-operator/pkg
+exit:   1
+also:   validator/p3-verify --container vectors/42-multisigner-operator/seal-two-signers.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/42-multisigner-operator/pkg                                ->  exit 0
+        the CONTROL: the same construction, the same two signerInfos, with signerC (Witness C
+        GmbH) as the second signer instead of the operator. One signer differs and nothing else,
+        so the exit code is decided by who the second signer is. It is also the arm that shows
+        the enumeration itself is sound: two signers, both compared, both date-checked, and the
+        report names two subjects.
+must print:
+  - "operator: the seal was made with the OPERATOR's own key"
+  - "1 of the 2 signer(s) in this container is CN=Operator GmbH"
+  - "a co-signer does not launder a self-seal"
+  - "SELF-SEAL — the operator's own key signed as CN=Operator GmbH"
+  - "signers      2 in 1 signature entry(ies)"
+  - "signer 1/2"
+  - "signer 2/2"
+  - "CN=Witness C GmbH"           (on the control run, not on this one)
+requirements exercised: MA-64, MA-70, §9.3 limit (i)
+why it fails without the fix: MEASURED. In the pre-fix copy of the verifier, this container
+        reports exit 0 CONFORMANT and prints "checked: the signer's public key differs from the
+        operator's" and "p3.6 operator exclusion checked against --operator-cert" — a report that
+        asserts the exclusion was checked while the operator co-signed. The pre-fix tool kept
+        only the FIRST certificate of openssl's -signer output, so signerA was "the signer" and
+        the operator was never read. The control reports exit 0 both before and after, which is
+        what makes this a fix and not a tightening.
+openssl: the signer set is enumerated from `openssl cms -verify ... -signer signers.pem`, which
+        writes one certificate per signerInfo, and held against the count of signerInfos in
+        `openssl cms -cmsout -inform DER -in sig.p7s -print`:
+          $ openssl cms -verify -noverify -binary -inform DER -in signatures.p7s \
+              -content META-INF/manifest.xml -purpose any -out /dev/null -signer signers.pem
+          signers.pem: 2 certificates
+            1. subject=CN=Witness AG, O=martelage test PKI (throwaway)
+            2. subject=CN=Operator GmbH, O=martelage test PKI (throwaway)
+          $ openssl cms -cmsout -inform DER -in signatures.p7s -print | grep -c issuerAndSerialNumber
+          2
+        If those two numbers ever disagree the run REFUSES rather than reporting the signers it
+        happened to see: an enumeration that cannot be checked is not an enumeration.

@@ -1,0 +1,30 @@
+vector: 40-signer-expired
+what:   a seal made with a certificate that expired on 2021-01-01, and a timestamp
+        token establishing a claimed time of now. The dates are FIXED in
+        tools/mkpki.sh (notBefore 2020-01-01, notAfter 2021-01-01), so this vector is
+        deterministic: it is expired at the claimed time on any host, at any time,
+        forever — the one date dependency in the P3 vectors is removed rather than
+        documented around
+run:    validator/p3-verify --container vectors/40-signer-expired/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/40-signer-expired/pkg
+exit:   1
+also:   validator/p3-verify --container vectors/34-seal-verified/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem vectors/34-seal-verified/pkg
+          ->  exit 0
+        the same construction signed by a certificate whose window contains the
+        claimed time: the exit code is decided by the date and by nothing else
+must print:
+  - "was expired at the claimed time"
+  - "2021-01-01 00:00:00Z"
+  - "from the verified timestamp"
+requirements exercised: MA-64, MA-70
+why it fails without the fix: openssl is told -no_check_time on every verification, so
+        the date check is this verifier's own and lives in one place. MEASURED: in a
+        copy of the verifier with that check removed, this container reports
+        CONFORMANT (exit 0) — its signature is genuine, its chain reaches the anchor,
+        and only the calendar is against it — while that copy still reports 0 on
+        vector 34. The claim "valid at the time" is exactly the statement that check
+        makes

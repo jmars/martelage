@@ -1,0 +1,26 @@
+vector: 38-no-timestamp
+what:   a sealed container with no RFC 3161 token, and a claim whose
+        claim.timestamp is "none" — so the container does not contradict its own
+        claim. Two different statements follow, and they must not be the same one:
+        --require-timestamp makes the absence a refusal, and without it the absence
+        leaves the certificate-date check unreachable, because no verified time can
+        be established to check the dates against
+run:    validator/p3-verify --container vectors/38-no-timestamp/seal.asice \
+          --require-timestamp --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/38-no-timestamp/pkg
+exit:   1
+also:   validator/p3-verify --container vectors/38-no-timestamp/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/38-no-timestamp/pkg   ->  exit 3
+        no --require-timestamp: nothing is refused, and the date check cannot be
+        reached. The two arms differ by one flag
+must print:
+  - "--require-timestamp was given and the container holds no RFC 3161 token"
+requirements exercised: MA-64, MA-69, MA-70
+why it fails without the fix: MEASURED. In a copy of the verifier where the
+        --require-timestamp arm is never taken — the shape this repository has caught
+        before, a flag that is parsed and never read — this vector reports exit 3 and
+        the flag buys nothing, while that copy still reports 0 on vector 34. The
+        asymmetry is 1 against 3 on the same container, one flag apart

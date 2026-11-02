@@ -1,0 +1,26 @@
+vector: 43-ca-signer
+what:   a CA certificate used as the sealing party. intermediateA signs the ASiC manifest itself:
+        it is a CA (basicConstraints critical CA:TRUE, pathlen:0, keyUsage keyCertSign,cRLSign),
+        its chain reaches root A, and its own window is valid. Every check that existed before
+        this one passes. A certificate that may issue certificates is not a legal person that
+        sealed anything — a seal made with one names an issuer.
+run:    validator/p3-verify --container vectors/43-ca-signer/seal-ca-signer.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/43-ca-signer/pkg
+exit:   1
+also:   validator/p3-verify --container vectors/34-seal-verified/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem vectors/34-seal-verified/pkg ->  exit 0
+        the CONTROL: a sealer certificate with basicConstraints CA:FALSE, under the same
+        intermediate and the same root. One extension differs.
+must print:
+  - "is a CA (basicConstraints CA:TRUE)"
+  - "CN=martelage test intermediate A"
+  - "not a sealing party"
+  - "basicConstraints X509v3 Basic Constraints: critical CA:FALSE"   (on the control run)
+requirements exercised: MA-64, MA-70
+why it fails without the fix: MEASURED. In the pre-fix copy the container reports exit 0
+        CONFORMANT with "signer CN=martelage test intermediate A" and no flag at all: there was
+        no basicConstraints check anywhere in the tool, and the chain is verified with
+        `-purpose any`, so a CA sailed through. The control reports exit 0 both before and after.

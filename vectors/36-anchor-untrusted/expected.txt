@@ -1,0 +1,32 @@
+vector: 36-anchor-untrusted
+what:   a seal whose signing certificate chains to no supplied trust anchor: it was
+        made under test root B, and vectors/pki/anchors holds root A only. The
+        signature verifies; the chain does not reach anything the verifier was given.
+        §10.3 makes that CANNOT DECIDE, not a refusal — the verifier was not given
+        the input that decides it — and it must never read as a pass
+run:    validator/p3-verify --container vectors/36-anchor-untrusted/seal.asice \
+          --trust-anchors vectors/pki/anchors \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/36-anchor-untrusted/pkg
+exit:   3
+also:   validator/p3-verify --container vectors/36-anchor-untrusted/seal.asice \
+          --trust-anchors vectors/pki/anchors-b \
+          --operator-cert vectors/pki/operator.crt.pem \
+          vectors/36-anchor-untrusted/pkg   ->  exit 0
+        the same container with root B supplied. anchors-b differs from anchors by
+        one file (rootB.crt.pem), so the exit code is decided by whether a supplied
+        anchor reaches the signer and by nothing else. anchors-b also carries root A
+        because the timestamping authority lives under it — otherwise the timestamp
+        would be the thing that failed and the vector would vary two axes at once
+must print:
+  - "no supplied trust anchor reaches the signer"
+  - "This is CANNOT DECIDE, not a refusal"
+  - "NOT verified — the signature verifies but no supplied anchor reaches the signer"
+requirements exercised: MA-61 (rule e), MA-64, MA-70, MA-71
+why it fails without the fix: MEASURED. In a copy of the verifier in which a chain
+        failure is reported as a refusal instead of as an undecided check, this arm
+        reports exit 1 — calling an untrusted signer a contradicted claim — and that
+        copy still reports 0 on vector 34. The split itself is measured by -noverify
+        (the signature alone verifies: exit 0) against the same command with -CAfile
+        anchors (exit 4, "certificate verify error"), so the two statements are
+        distinguishable and are reported as two
